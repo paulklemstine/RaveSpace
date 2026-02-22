@@ -1,0 +1,45 @@
+{
+  "rules": {
+    "boards": {
+      "$boardId": {
+        "cursors": {
+          ".read": "auth != null",
+          "$userId": {
+            ".write": "auth != null && auth.uid === $userId"
+          }
+        },
+        "presence": {
+          ".read": "auth != null",
+          "$userId": {
+            ".write": "auth != null && auth.uid === $userId"
+          }
+        },
+        "chat": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        },
+        "webcamPeers": {
+          ".read": "auth != null",
+          "$userId": {
+            ".write": "auth != null && auth.uid === $userId"
+          }
+        },
+        "webrtcCalls": {
+          ".read": "auth != null",
+          "$connKey": {
+            ".write": "auth != null && ($connKey.contains(auth.uid))"
+          }
+        }
+      }
+    },
+    "ravespace": {
+      ".read": true,
+      "version": {
+        ".write": "auth != null"
+      },
+      "params": {
+        ".write": "auth != null"
+      }
+    }
+  }
+}

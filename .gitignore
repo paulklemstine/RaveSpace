@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+
+# Vite
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# Claude
+.claude/
+
+# TypeScript build info
+*.tsBuildInfo
