@@ -7,9 +7,11 @@ uniform float uEnergy;
 uniform float uBass;
 uniform float uMid;
 uniform float uTreble;
+uniform float uKick;
+uniform float uBeatIntensity;
+uniform float uSpectralFlux;
 uniform vec2 uResolution;
 
-// Param uniforms
 uniform float uSpeed;
 uniform float uRadius;
 uniform float uTwist;
@@ -17,40 +19,55 @@ uniform float uGlowIntensity;
 uniform float uAudioReactivity;
 uniform int uColorScheme;
 
-// Color palettes
-vec3 fireColor(float t) {
-  return vec3(
-    smoothstep(0.0, 0.5, t),
-    smoothstep(0.3, 0.8, t) * 0.6,
-    smoothstep(0.7, 1.0, t) * 0.3
+#define PI 3.14159265
+#define TAU 6.28318530
+
+// --- Cosine palettes ---
+vec3 cosPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
+  return a + b * cos(TAU * (c * t + d));
+}
+
+vec3 cyberColor(float t) {
+  return cosPalette(t,
+    vec3(0.5, 0.5, 0.5),
+    vec3(0.5, 0.5, 0.5),
+    vec3(1.0, 1.0, 1.0),
+    vec3(0.00, 0.10, 0.20)
   );
 }
 
-vec3 iceColor(float t) {
-  return vec3(
-    smoothstep(0.5, 1.0, t) * 0.4,
-    smoothstep(0.2, 0.8, t) * 0.7,
-    smoothstep(0.0, 0.5, t)
+vec3 dmtColor(float t) {
+  return cosPalette(t,
+    vec3(0.5, 0.5, 0.5),
+    vec3(0.5, 0.5, 0.5),
+    vec3(1.0, 1.0, 0.5),
+    vec3(0.80, 0.90, 0.30)
   );
 }
 
-vec3 toxicColor(float t) {
-  return vec3(
-    smoothstep(0.5, 1.0, t) * 0.3,
-    smoothstep(0.0, 0.5, t),
-    smoothstep(0.3, 0.8, t) * 0.4
+vec3 voidColor(float t) {
+  return cosPalette(t,
+    vec3(0.5, 0.5, 0.5),
+    vec3(0.5, 0.5, 0.5),
+    vec3(1.0, 0.7, 0.4),
+    vec3(0.00, 0.15, 0.20)
   );
 }
 
-vec3 rainbowColor(float t) {
-  return 0.5 + 0.5 * cos(6.28318 * (t + vec3(0.0, 0.33, 0.67)));
+vec3 acidColor(float t) {
+  return 0.5 + 0.5 * cos(TAU * (t * 2.0 + vec3(0.0, 0.33, 0.67)));
 }
 
 vec3 getColor(float t) {
-  if (uColorScheme == 0) return fireColor(t);
-  if (uColorScheme == 1) return iceColor(t);
-  if (uColorScheme == 2) return toxicColor(t);
-  return rainbowColor(t);
+  if (uColorScheme == 0) return cyberColor(t);
+  if (uColorScheme == 1) return dmtColor(t);
+  if (uColorScheme == 2) return voidColor(t);
+  return acidColor(t);
+}
+
+// --- Noise for texture detail ---
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
 
 void main() {
@@ -61,52 +78,113 @@ void main() {
   float time = uTime * uSpeed;
 
   // Polar coordinates
-  float dist = length(uv);
-  float angle = atan(uv.y, uv.x);
+  float r = length(uv);
+  float a = atan(uv.y, uv.x);
 
-  // Tunnel mapping: inverse distance for depth
-  float depth = uRadius / (dist + 0.01);
+  // Audio-reactive wall breathing: kick for sharp punch + bass for sustain
+  float breathe = 1.0 + sin(time * 0.7) * 0.08 + uKick * 0.5 * uAudioReactivity + uBass * 0.15 * uAudioReactivity;
 
-  // Audio-reactive radius pulse
-  float radiusPulse = 1.0 + uBass * 0.3 * uAudioReactivity;
-  depth *= radiusPulse;
+  // Tunnel depth: inverse radius with breathing walls
+  float depth = uRadius / (r * breathe + 0.001);
 
-  // Forward motion with beat burst
-  float speed = time * 2.0;
-  float beatBurst = uEnergy * 3.0 * uAudioReactivity;
-  float z = depth + speed + beatBurst;
+  // Forward motion: constant + energy bursts + beat intensity lurch
+  float forwardSpeed = time * 2.0 + uEnergy * 5.0 * uAudioReactivity + uBeatIntensity * 5.0 * uAudioReactivity;
+  float z = depth + forwardSpeed;
 
-  // Twist along depth
-  float twistAngle = angle + depth * uTwist * 0.5 + time * 0.3;
+  // Twist increases with depth
+  float tw = a + depth * uTwist * 0.4 + time * 0.15;
 
-  // Repeating pattern
-  float pattern = sin(twistAngle * 4.0 + z * 0.5) *
-                  sin(z * 0.8 - twistAngle * 2.0);
+  // ---- Primary grid layer (large hexagonal-ish cells) ----
+  // Map tunnel surface to grid coordinates
+  float gridU = tw / TAU * 8.0;
+  float gridV = z * 0.4;
 
-  // Mid-frequency texture modulation
-  pattern += sin(twistAngle * 8.0 + z * 1.5) * 0.3 * (1.0 + uMid * uAudioReactivity);
+  // Ring lines (across tunnel) — spectral flux ripples the rings
+  float ringLine = abs(fract(gridV + sin(z * 3.0 + uSpectralFlux * 4.0) * 0.05) - 0.5) * 2.0;
+  float ring = exp(-ringLine * 12.0) * 1.2;
 
-  // Rings
-  float rings = sin(z * 3.0) * 0.5 + 0.5;
+  // Segment lines (along tunnel)
+  float segLine = abs(fract(gridU) - 0.5) * 2.0;
+  float seg = exp(-segLine * 12.0) * 1.2;
 
-  // Combine
-  float v = pattern * 0.5 + rings * 0.5;
-  v = v * 0.5 + 0.5; // remap to 0-1
+  // Cross braces (diagonal detail)
+  float crossLine = abs(fract(gridU + gridV) - 0.5) * 2.0;
+  float cross = exp(-crossLine * 16.0) * 0.6;
 
-  // Color from palette
-  vec3 color = getColor(v + time * 0.05);
+  // Combined wireframe with glow
+  float wireframe = ring + seg + cross;
 
-  // Edge glow driven by treble
-  float edgeGlow = smoothstep(0.8, 0.0, dist) * uGlowIntensity;
-  float trebleGlow = uTreble * uAudioReactivity * 1.5;
-  color += edgeGlow * (0.3 + trebleGlow) * getColor(v + 0.3);
+  // ---- Secondary layer (finer detail) ----
+  float gridU2 = tw / TAU * 24.0;
+  float gridV2 = z * 1.2;
+  float ring2 = exp(-abs(fract(gridV2) - 0.5) * 2.0 * 20.0) * 0.4;
+  float seg2 = exp(-abs(fract(gridU2) - 0.5) * 2.0 * 20.0) * 0.4;
+  float fineDetail = ring2 + seg2;
 
-  // Depth fade (darker at center = far away)
-  float depthFade = smoothstep(0.0, 2.0, dist);
-  color *= 0.3 + depthFade * 0.7;
+  // ---- Cell interior glow ----
+  // Each cell gets a subtle fill based on its position
+  vec2 cellId = floor(vec2(gridU, gridV));
+  float cellHash = hash(cellId);
+  float cellFill = cellHash * 0.15 * (0.5 + uMid * uAudioReactivity);
 
-  // Overall energy brightness
-  color *= 0.7 + uEnergy * 0.5 * uAudioReactivity;
+  // ---- Pulsing rings traveling forward ----
+  float pulsePhase = fract(z * 0.15 - time * 0.5);
+  float pulse = exp(-pulsePhase * 8.0) * uEnergy * uAudioReactivity * 2.0;
 
-  gl_FragColor = vec4(color, 1.0);
+  // ---- Color computation ----
+  float colorPhase = z * 0.015 + a * 0.08 + time * 0.05;
+  colorPhase += uMid * 0.2 * uAudioReactivity;
+  vec3 mainColor = getColor(colorPhase);
+
+  // Secondary color offset for depth
+  vec3 accentColor = getColor(colorPhase + 0.3);
+
+  // ---- Treble sparkle on grid intersections ----
+  float sparkle = ring * seg; // bright at intersections
+  sparkle *= uTreble * uAudioReactivity * 3.0;
+
+  // ---- Depth fog: darker at edges (close to camera), brighter toward center ----
+  float fog = smoothstep(0.0, 0.3, r) * exp(-r * 0.8);
+
+  // ---- Center light (tunnel vanishing point glow) + beat intensity edge glow ----
+  float centerGlow = exp(-r * 4.0) * (0.3 + uEnergy * 0.7 * uAudioReactivity + uBeatIntensity * 2.0 * uAudioReactivity);
+  vec3 centerColor = getColor(time * 0.1) * 1.5;
+
+  // ---- Bass throb: overall brightness pulse on bass hits ----
+  float bassThrobFactor = 1.0 + uBass * 0.4 * uAudioReactivity;
+
+  // ---- Final compositing ----
+  vec3 result = vec3(0.0);
+
+  // Wireframe glow
+  result += mainColor * wireframe * uGlowIntensity * fog;
+
+  // Fine detail layer
+  result += accentColor * fineDetail * uGlowIntensity * 0.5 * fog;
+
+  // Cell fill
+  result += mainColor * cellFill * fog;
+
+  // Forward-traveling pulse rings
+  result += accentColor * pulse * fog;
+
+  // Sparkle at intersections
+  result += vec3(1.0, 0.9, 0.95) * sparkle * fog;
+
+  // Center vanishing point
+  result += centerColor * centerGlow;
+
+  // Apply bass throb
+  result *= bassThrobFactor;
+
+  // Global energy brightness
+  result *= 0.5 + uEnergy * 0.7 * uAudioReactivity;
+
+  // Subtle vignette
+  result *= smoothstep(2.0, 0.3, r);
+
+  // Clamp to prevent oversaturation
+  result = min(result, vec3(2.0));
+
+  gl_FragColor = vec4(result, 1.0);
 }

@@ -1,4 +1,13 @@
-import { WebGLRenderer } from "three";
+import {
+  WebGLRenderer,
+  WebGLRenderTarget,
+  OrthographicCamera,
+  PlaneGeometry,
+  ShaderMaterial,
+  Mesh,
+  Scene as ThreeScene,
+  LinearFilter,
+} from "three";
 import type { Scene } from "../types/scene";
 import { isParameterizedScene } from "../types/scene";
 import { SILENT_AUDIO } from "../types/audio";
@@ -32,6 +41,55 @@ const DEFAULT_GLOBAL_PARAMS: GlobalParams = {
   strobe: false,
 };
 
+export const BLEND_MODES: Record<string, number> = {
+  additive: 0,
+  screen: 1,
+  multiply: 2,
+  overlay: 3,
+  difference: 4,
+};
+
+const COMPOSITE_VERTEX = `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+const COMPOSITE_FRAGMENT = `
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D tBase;
+uniform sampler2D tOverlay;
+uniform float uOpacity;
+uniform int uBlendMode;
+
+vec3 blendAdditive(vec3 base, vec3 blend) { return base + blend; }
+vec3 blendScreen(vec3 base, vec3 blend) { return 1.0 - (1.0 - base) * (1.0 - blend); }
+vec3 blendMultiply(vec3 base, vec3 blend) { return base * blend; }
+vec3 blendOverlay(vec3 base, vec3 blend) {
+  return vec3(
+    base.r < 0.5 ? 2.0*base.r*blend.r : 1.0-2.0*(1.0-base.r)*(1.0-blend.r),
+    base.g < 0.5 ? 2.0*base.g*blend.g : 1.0-2.0*(1.0-base.g)*(1.0-blend.g),
+    base.b < 0.5 ? 2.0*base.b*blend.b : 1.0-2.0*(1.0-base.b)*(1.0-blend.b)
+  );
+}
+vec3 blendDifference(vec3 base, vec3 blend) { return abs(base - blend); }
+
+void main() {
+  vec3 base = texture2D(tBase, vUv).rgb;
+  vec3 over = texture2D(tOverlay, vUv).rgb;
+  vec3 blended;
+  if (uBlendMode == 0) blended = blendAdditive(base, over);
+  else if (uBlendMode == 1) blended = blendScreen(base, over);
+  else if (uBlendMode == 2) blended = blendMultiply(base, over);
+  else if (uBlendMode == 3) blended = blendOverlay(base, over);
+  else blended = blendDifference(base, over);
+  gl_FragColor = vec4(mix(base, blended, uOpacity), 1.0);
+}
+`;
+
 export class Renderer {
   private renderer: WebGLRenderer;
   private scene: Scene | null = null;
@@ -47,6 +105,17 @@ export class Renderer {
   private frameCount = 0;
   private lastFpsTime = 0;
   private fps = 0;
+
+  // Compositing: overlay scene blended on top of primary
+  private overlayScene: Scene | null = null;
+  private overlaySceneName: string | null = null;
+  private overlayOpacity = 0.5;
+  private overlayBlendMode = 0; // index into BLEND_MODES
+  private primaryRT: WebGLRenderTarget | null = null;
+  private overlayRT: WebGLRenderTarget | null = null;
+  private compositeScene: ThreeScene | null = null;
+  private compositeCamera: OrthographicCamera | null = null;
+  private compositeMaterial: ShaderMaterial | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
@@ -137,6 +206,71 @@ export class Renderer {
     this.effectsLayer.setSettings(settings);
   }
 
+  // --- Compositing: overlay a second scene ---
+
+  private ensureCompositeResources(): void {
+    if (this.primaryRT) return;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const opts = { minFilter: LinearFilter, magFilter: LinearFilter };
+    this.primaryRT = new WebGLRenderTarget(w, h, opts);
+    this.overlayRT = new WebGLRenderTarget(w, h, opts);
+
+    this.compositeMaterial = new ShaderMaterial({
+      vertexShader: COMPOSITE_VERTEX,
+      fragmentShader: COMPOSITE_FRAGMENT,
+      uniforms: {
+        tBase: { value: null },
+        tOverlay: { value: null },
+        uOpacity: { value: 0.5 },
+        uBlendMode: { value: 0 },
+      },
+    });
+
+    const mesh = new Mesh(new PlaneGeometry(2, 2), this.compositeMaterial);
+    this.compositeScene = new ThreeScene();
+    this.compositeScene.add(mesh);
+    this.compositeCamera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  }
+
+  setOverlayScene(name: string, sceneManager: SceneManager): void {
+    // Clear existing overlay
+    this.clearOverlayScene();
+
+    this.ensureCompositeResources();
+
+    const scene = sceneManager.create(name);
+    scene.init(this.renderer);
+    scene.resize(window.innerWidth, window.innerHeight);
+    this.overlayScene = scene;
+    this.overlaySceneName = name;
+  }
+
+  clearOverlayScene(): void {
+    this.overlayScene?.dispose();
+    this.overlayScene = null;
+    this.overlaySceneName = null;
+  }
+
+  setOverlayOpacity(opacity: number): void {
+    this.overlayOpacity = Math.max(0, Math.min(1, opacity));
+  }
+
+  setBlendMode(mode: string): void {
+    const index = BLEND_MODES[mode];
+    if (index !== undefined) this.overlayBlendMode = index;
+  }
+
+  getOverlaySceneName(): string | null {
+    return this.overlaySceneName;
+  }
+
+  setOverlayParams(values: ParamValues): void {
+    if (this.overlayScene && isParameterizedScene(this.overlayScene)) {
+      this.overlayScene.setParams(values);
+    }
+  }
+
   start(): void {
     this.startTime = performance.now() / 1000;
     this.loop();
@@ -153,8 +287,12 @@ export class Renderer {
     this.stop();
     window.removeEventListener("resize", this.resize);
     this.scene?.dispose();
+    this.overlayScene?.dispose();
     this.transitionEngine.dispose();
     this.effectsLayer.dispose();
+    this.primaryRT?.dispose();
+    this.overlayRT?.dispose();
+    this.compositeMaterial?.dispose();
     this.renderer.dispose();
   }
 
@@ -215,16 +353,48 @@ export class Renderer {
       spectralCentroid: rawAudio.spectralCentroid,
       beat: rawAudio.beat && intensity > 0.1,
       bpm: rawAudio.bpm,
+      kick: rawAudio.kick * intensity,
+      beatIntensity: rawAudio.beatIntensity * intensity,
+      spectralFlux: rawAudio.spectralFlux * intensity,
     };
 
-    // During transition, delegate to transitionEngine
-    if (this.transitionEngine.isTransitioning) {
-      this.transitionEngine.update(time, audio);
-      this.effectsLayer.update();
-      return;
+    const hasOverlay = this.overlayScene !== null && this.primaryRT && this.overlayRT;
+
+    if (hasOverlay) {
+      // --- Compositing path: render primary + overlay to RTs, then blend ---
+
+      // Render primary scene (or transition) to primaryRT
+      if (this.transitionEngine.isTransitioning) {
+        this.transitionEngine.update(time, audio, this.primaryRT);
+      } else {
+        this.renderer.setRenderTarget(this.primaryRT);
+        this.renderer.setClearColor(0x000000, 1);
+        this.renderer.clear();
+        this.scene?.update(time, audio);
+      }
+
+      // Render overlay to overlayRT
+      this.renderer.setRenderTarget(this.overlayRT);
+      this.renderer.setClearColor(0x000000, 1);
+      this.renderer.clear();
+      this.overlayScene!.update(time, audio);
+
+      // Composite both to screen
+      this.renderer.setRenderTarget(null);
+      this.compositeMaterial!.uniforms.tBase!.value = this.primaryRT!.texture;
+      this.compositeMaterial!.uniforms.tOverlay!.value = this.overlayRT!.texture;
+      this.compositeMaterial!.uniforms.uOpacity!.value = this.overlayOpacity;
+      this.compositeMaterial!.uniforms.uBlendMode!.value = this.overlayBlendMode;
+      this.renderer.render(this.compositeScene!, this.compositeCamera!);
+    } else {
+      // --- Normal path (no overlay) ---
+      if (this.transitionEngine.isTransitioning) {
+        this.transitionEngine.update(time, audio);
+      } else {
+        this.scene?.update(time, audio);
+      }
     }
 
-    this.scene?.update(time, audio);
     this.effectsLayer.update();
   };
 
@@ -233,6 +403,9 @@ export class Renderer {
     const h = window.innerHeight;
     this.renderer.setSize(w, h);
     this.scene?.resize(w, h);
+    this.overlayScene?.resize(w, h);
     this.transitionEngine.resize(w, h);
+    this.primaryRT?.setSize(w, h);
+    this.overlayRT?.setSize(w, h);
   };
 }

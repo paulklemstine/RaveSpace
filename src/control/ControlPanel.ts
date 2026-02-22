@@ -91,6 +91,94 @@ export class ControlPanel {
     });
     content.appendChild(effectsContainer);
 
+    // --- Overlay / Composite controls ---
+    const overlayContainer = document.createElement("div");
+    overlayContainer.className = "border-t border-gray-800 pt-6";
+
+    const overlayTitle = document.createElement("h2");
+    overlayTitle.textContent = "Layer Composite";
+    overlayTitle.className = "text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4";
+    overlayContainer.appendChild(overlayTitle);
+
+    const overlayGrid = document.createElement("div");
+    overlayGrid.className = "grid grid-cols-3 gap-3";
+
+    // Overlay scene select
+    const sceneGroup = document.createElement("div");
+    const sceneLabel = document.createElement("label");
+    sceneLabel.textContent = "Overlay Scene";
+    sceneLabel.className = "block text-xs text-gray-500 mb-1";
+    sceneGroup.appendChild(sceneLabel);
+
+    const overlaySelect = document.createElement("select");
+    overlaySelect.className = "w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white";
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = "None";
+    overlaySelect.appendChild(noneOpt);
+    for (const s of SCENE_REGISTRY) {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.displayName;
+      overlaySelect.appendChild(opt);
+    }
+    sceneGroup.appendChild(overlaySelect);
+    overlayGrid.appendChild(sceneGroup);
+
+    // Blend mode select
+    const blendGroup = document.createElement("div");
+    const blendLabel = document.createElement("label");
+    blendLabel.textContent = "Blend Mode";
+    blendLabel.className = "block text-xs text-gray-500 mb-1";
+    blendGroup.appendChild(blendLabel);
+
+    const blendSelect = document.createElement("select");
+    blendSelect.className = "w-full bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-sm text-white";
+    for (const mode of ["additive", "screen", "multiply", "overlay", "difference"]) {
+      const opt = document.createElement("option");
+      opt.value = mode;
+      opt.textContent = mode.charAt(0).toUpperCase() + mode.slice(1);
+      blendSelect.appendChild(opt);
+    }
+    blendGroup.appendChild(blendSelect);
+    overlayGrid.appendChild(blendGroup);
+
+    // Opacity slider
+    const opacityGroup = document.createElement("div");
+    const opacityLabel = document.createElement("label");
+    opacityLabel.textContent = "Opacity";
+    opacityLabel.className = "block text-xs text-gray-500 mb-1";
+    opacityGroup.appendChild(opacityLabel);
+
+    const opacitySlider = document.createElement("input");
+    opacitySlider.type = "range";
+    opacitySlider.min = "0";
+    opacitySlider.max = "100";
+    opacitySlider.value = "50";
+    opacitySlider.className = "w-full accent-purple-500";
+    opacityGroup.appendChild(opacitySlider);
+    overlayGrid.appendChild(opacityGroup);
+
+    overlayContainer.appendChild(overlayGrid);
+    content.appendChild(overlayContainer);
+
+    // Wire overlay controls
+    const writeOverlay = () => {
+      const scene = overlaySelect.value || null;
+      if (!scene) {
+        void set(ref(db, "ravespace/control/overlay"), null);
+      } else {
+        void set(ref(db, "ravespace/control/overlay"), {
+          scene,
+          blendMode: blendSelect.value,
+          opacity: parseInt(opacitySlider.value, 10) / 100,
+        });
+      }
+    };
+    overlaySelect.addEventListener("change", writeOverlay);
+    blendSelect.addEventListener("change", writeOverlay);
+    opacitySlider.addEventListener("input", writeOverlay);
+
     const aiContainer = document.createElement("div");
     aiContainer.className = "border-t border-gray-800 pt-6";
     this.aiControls = new AIControls(aiContainer, (values) => {

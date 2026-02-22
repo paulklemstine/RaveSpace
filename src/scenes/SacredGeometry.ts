@@ -13,44 +13,40 @@ import type { AudioFeatures } from "../types/audio";
 import type { ParamDescriptor, ParamValues } from "../types/params";
 import { SCENE_REGISTRY } from "./registry";
 import vertexShader from "../shaders/fullscreen.vert";
-import fragmentShader from "../shaders/tunnel.frag";
+import fragmentShader from "../shaders/sacred-geometry.frag";
 
 const COLOR_SCHEME_MAP: Record<string, number> = {
-  cyber: 0,
-  dmt: 1,
-  void: 2,
-  acid: 3,
+  neon: 0,
+  ethereal: 1,
+  golden: 2,
+  rainbow: 3,
 };
 
-const COLOR_SCHEME_REVERSE = ["cyber", "dmt", "void", "acid"];
+const COLOR_SCHEME_REVERSE = ["neon", "ethereal", "golden", "rainbow"];
 
-interface TunnelUniforms extends Record<string, IUniform> {
+interface SacredGeometryUniforms extends Record<string, IUniform> {
   uTime: IUniform<number>;
   uEnergy: IUniform<number>;
   uBass: IUniform<number>;
   uMid: IUniform<number>;
   uTreble: IUniform<number>;
-  uKick: IUniform<number>;
-  uBeatIntensity: IUniform<number>;
-  uSpectralFlux: IUniform<number>;
   uResolution: IUniform<Vector2>;
   uSpeed: IUniform<number>;
-  uRadius: IUniform<number>;
-  uTwist: IUniform<number>;
-  uGlowIntensity: IUniform<number>;
+  uLayers: IUniform<number>;
+  uSymmetry: IUniform<number>;
   uAudioReactivity: IUniform<number>;
   uColorScheme: IUniform<number>;
 }
 
-const METADATA = SCENE_REGISTRY.find((s) => s.id === "tunnel")!;
+const METADATA = SCENE_REGISTRY.find((s) => s.id === "sacredGeometry")!;
 
-export class TunnelScene implements ParameterizedScene {
+export class SacredGeometry implements ParameterizedScene {
   readonly params: readonly ParamDescriptor[] = METADATA.params;
 
   private camera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private threeScene = new ThreeScene();
   private material: ShaderMaterial;
-  private uniforms: TunnelUniforms;
+  private uniforms: SacredGeometryUniforms;
   private mesh: Mesh;
   private renderer: WebGLRenderer | null = null;
 
@@ -61,14 +57,10 @@ export class TunnelScene implements ParameterizedScene {
       uBass: { value: 0 },
       uMid: { value: 0 },
       uTreble: { value: 0 },
-      uKick: { value: 0 },
-      uBeatIntensity: { value: 0 },
-      uSpectralFlux: { value: 0 },
       uResolution: { value: new Vector2(1, 1) },
       uSpeed: { value: 1.0 },
-      uRadius: { value: 0.8 },
-      uTwist: { value: 1.0 },
-      uGlowIntensity: { value: 1.0 },
+      uLayers: { value: 4.0 },
+      uSymmetry: { value: 6.0 },
       uAudioReactivity: { value: 1.0 },
       uColorScheme: { value: 0 },
     };
@@ -93,9 +85,6 @@ export class TunnelScene implements ParameterizedScene {
     this.uniforms.uBass.value = audio.bass;
     this.uniforms.uMid.value = audio.mid;
     this.uniforms.uTreble.value = audio.treble;
-    this.uniforms.uKick.value = audio.kick;
-    this.uniforms.uBeatIntensity.value = audio.beatIntensity;
-    this.uniforms.uSpectralFlux.value = audio.spectralFlux;
     this.renderer!.render(this.threeScene, this.camera);
   }
 
@@ -110,9 +99,8 @@ export class TunnelScene implements ParameterizedScene {
 
   setParams(values: ParamValues): void {
     if (values.speed !== undefined) this.uniforms.uSpeed.value = values.speed as number;
-    if (values.radius !== undefined) this.uniforms.uRadius.value = values.radius as number;
-    if (values.twist !== undefined) this.uniforms.uTwist.value = values.twist as number;
-    if (values.glowIntensity !== undefined) this.uniforms.uGlowIntensity.value = values.glowIntensity as number;
+    if (values.layers !== undefined) this.uniforms.uLayers.value = values.layers as number;
+    if (values.symmetry !== undefined) this.uniforms.uSymmetry.value = values.symmetry as number;
     if (values.audioReactivity !== undefined) this.uniforms.uAudioReactivity.value = values.audioReactivity as number;
     if (values.colorScheme !== undefined) {
       this.uniforms.uColorScheme.value = COLOR_SCHEME_MAP[values.colorScheme as string] ?? 0;
@@ -122,11 +110,10 @@ export class TunnelScene implements ParameterizedScene {
   getParams(): ParamValues {
     return {
       speed: this.uniforms.uSpeed.value,
-      radius: this.uniforms.uRadius.value,
-      twist: this.uniforms.uTwist.value,
-      glowIntensity: this.uniforms.uGlowIntensity.value,
+      layers: this.uniforms.uLayers.value,
+      symmetry: this.uniforms.uSymmetry.value,
       audioReactivity: this.uniforms.uAudioReactivity.value,
-      colorScheme: COLOR_SCHEME_REVERSE[this.uniforms.uColorScheme.value] ?? "cyber",
+      colorScheme: COLOR_SCHEME_REVERSE[this.uniforms.uColorScheme.value] ?? "neon",
     };
   }
 }

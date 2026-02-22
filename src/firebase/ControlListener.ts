@@ -64,6 +64,36 @@ export class ControlListener {
       }),
     );
 
+    // Listen for overlay scene composite settings
+    const overlayRef = ref(db, "ravespace/control/overlay");
+    this.unsubscribers.push(
+      onValue(overlayRef, (snapshot) => {
+        const data = snapshot.val() as {
+          scene?: string;
+          blendMode?: string;
+          opacity?: number;
+        } | null;
+        if (!data || !data.scene) {
+          this.renderer.clearOverlayScene();
+          return;
+        }
+        // Only set if overlay scene changed
+        if (data.scene !== this.renderer.getOverlaySceneName()) {
+          try {
+            this.renderer.setOverlayScene(data.scene, this.sceneManager);
+          } catch (e) {
+            console.warn("Failed to set overlay scene:", e);
+          }
+        }
+        if (data.blendMode) {
+          this.renderer.setBlendMode(data.blendMode);
+        }
+        if (data.opacity !== undefined) {
+          this.renderer.setOverlayOpacity(data.opacity);
+        }
+      }),
+    );
+
     // Listen for per-scene param changes for each registered scene
     for (const name of this.sceneManager.list()) {
       const paramRef = ref(db, `ravespace/control/sceneParams/${name}`);

@@ -109,7 +109,7 @@ export class TransitionEngine {
     newScene.resize(this.targetB.width, this.targetB.height);
   }
 
-  update(time: number, audio: AudioFeatures): void {
+  update(time: number, audio: AudioFeatures, outputTarget?: WebGLRenderTarget | null): void {
     if (this.state !== "transitioning" || !this.oldScene || !this.newScene) return;
 
     // Set start time on first frame
@@ -132,8 +132,8 @@ export class TransitionEngine {
     this.renderer.clear();
     this.newScene.update(time, audio);
 
-    // Composite to screen
-    this.renderer.setRenderTarget(null);
+    // Composite to output target (or screen)
+    this.renderer.setRenderTarget(outputTarget ?? null);
     this.compositeMaterial.uniforms.tFrom!.value = this.targetA.texture;
     this.compositeMaterial.uniforms.tTo!.value = this.targetB.texture;
     this.compositeMaterial.uniforms.progress!.value = this.progress;

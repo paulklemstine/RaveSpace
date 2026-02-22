@@ -5,6 +5,11 @@ import { SceneManager } from "./engine/SceneManager";
 import { PlasmaShader } from "./scenes/PlasmaShader";
 import { TunnelScene } from "./scenes/TunnelScene";
 import { ParticleField } from "./scenes/ParticleField";
+import { SacredGeometry } from "./scenes/SacredGeometry";
+import { FractalDive } from "./scenes/FractalDive";
+import { Kaleidoscope } from "./scenes/Kaleidoscope";
+import { GodRays } from "./scenes/GodRays";
+import { LiquidDream } from "./scenes/LiquidDream";
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { SCENE_REGISTRY } from "./scenes/registry";
 import { TelemetryPublisher } from "./firebase/TelemetryPublisher";
@@ -94,6 +99,11 @@ async function boot() {
   sceneManager.register(SCENE_REGISTRY[0]!, () => new PlasmaShader());
   sceneManager.register(SCENE_REGISTRY[1]!, () => new ParticleField());
   sceneManager.register(SCENE_REGISTRY[2]!, () => new TunnelScene());
+  sceneManager.register(SCENE_REGISTRY[3]!, () => new SacredGeometry());
+  sceneManager.register(SCENE_REGISTRY[4]!, () => new FractalDive());
+  sceneManager.register(SCENE_REGISTRY[5]!, () => new Kaleidoscope());
+  sceneManager.register(SCENE_REGISTRY[6]!, () => new GodRays());
+  sceneManager.register(SCENE_REGISTRY[7]!, () => new LiquidDream());
 
   // Start audio
   const audio = new AudioAnalyzer();

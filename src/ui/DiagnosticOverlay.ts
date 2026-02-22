@@ -79,6 +79,9 @@ export class DiagnosticOverlay {
       `Bass:   ${features.bass.toFixed(2)}`,
       `Mid:    ${features.mid.toFixed(2)}`,
       `Treble: ${features.treble.toFixed(2)}`,
+      `Kick:   ${features.kick.toFixed(2)}`,
+      `Flux:   ${features.spectralFlux.toFixed(2)}`,
+      `Beat:   ${features.beatIntensity.toFixed(2)}`,
       `BPM:    ${features.bpm || "—"}`,
     ];
 
