@@ -1,30 +1,28 @@
-import { ref, onValue, remove, get, query, orderByChild, limitToFirst, type Unsubscribe } from "firebase/database";
+import { ref, onValue, query, orderByChild, limitToLast, type Unsubscribe } from "firebase/database";
 import { db } from "../firebase/config";
 import {
   ANIMATIONS,
   pickRandomAnimation,
-  type AnimationStyleName,
   type CalloutAnimation,
 } from "./callout-animations";
 
-interface ActiveCallout {
+interface QueueEntry {
+  key: string;
   name: string;
-  startTime: number;
-  duration: number;
-  source?: "audience" | "vj" | "ai";
-  animationStyle?: AnimationStyleName;
+  timestamp: number;
 }
 
 type CalloutState = "idle" | "entering" | "holding" | "exiting";
 
 const ENTRANCE_DURATION = 0.8;
 const EXIT_DURATION = 1.0;
-const DEFAULT_QUEUE_INTERVAL = 15;
+const GAP_BETWEEN_CALLOUTS_MS = 3_000;
+const MAX_QUEUE_SIZE = 200;
+const HOLD_DURATION = 5;
 
 /**
  * Psychedelic animated text overlay for audience shoutouts, VJ callouts, and AI phrases.
- * Supports multiple animation styles with entrance/hold/exit state machine.
- * Auto-processes audience queue when no active callout is showing.
+ * Keeps all audience submissions and cycles through them endlessly with random animations.
  */
 export class CalloutOverlay {
   private el: HTMLDivElement;
@@ -35,7 +33,7 @@ export class CalloutOverlay {
   private unsubscribers: Unsubscribe[] = [];
   private rafId = 0;
   private showStartTime = 0;
-  private showDuration = 5;
+  private showDuration = HOLD_DURATION;
   private isShowing = false;
 
   // Animation state machine
@@ -43,9 +41,10 @@ export class CalloutOverlay {
   private stateStartTime = 0;
   private currentAnimation: CalloutAnimation = ANIMATIONS.wave;
 
-  // Queue auto-processing
-  private queueCheckTimer: ReturnType<typeof setInterval> | null = null;
-  private queueInterval = DEFAULT_QUEUE_INTERVAL;
+  // Cycling queue — keep all entries, round-robin through them
+  private queue: QueueEntry[] = [];
+  private cycleIndex = 0;
+  private gapTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     this.el = document.createElement("div");
@@ -101,85 +100,62 @@ export class CalloutOverlay {
   }
 
   start(): void {
-    // Listen for active callout
-    const activeRef = ref(db, "ravespace/callouts/active");
-    const unsub = onValue(activeRef, (snapshot) => {
-      const data = snapshot.val() as ActiveCallout | null;
-      if (data?.name) {
-        this.show(data.name, data.duration ?? 5, data.animationStyle);
+    // Listen for queue changes — keep all entries in memory, cycle through them
+    const queueRef = query(
+      ref(db, "ravespace/callouts/queue"),
+      orderByChild("timestamp"),
+      limitToLast(MAX_QUEUE_SIZE),
+    );
+    const unsub = onValue(queueRef, (snapshot) => {
+      const entries: QueueEntry[] = [];
+      snapshot.forEach((child) => {
+        const val = child.val();
+        if (val?.name) {
+          entries.push({
+            key: child.key!,
+            name: val.name,
+            timestamp: val.timestamp ?? 0,
+          });
+        }
+      });
+      // Sort by timestamp ascending
+      entries.sort((a, b) => a.timestamp - b.timestamp);
+      this.queue = entries;
+
+      // If we just got our first entry and nothing is showing, kick off the cycle
+      if (entries.length > 0 && this.state === "idle" && !this.gapTimer) {
+        this.showNext();
       }
     });
     this.unsubscribers.push(unsub);
-
-    // Listen for settings changes (queue interval)
-    const settingsRef = ref(db, "ravespace/callouts/settings");
-    const settingsUnsub = onValue(settingsRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data?.interval) {
-        this.queueInterval = data.interval;
-      }
-      this.setupQueueProcessing();
-    });
-    this.unsubscribers.push(settingsUnsub);
-
-    // Start queue auto-processing
-    this.setupQueueProcessing();
   }
 
-  // ─── Queue Auto-Processing ────────────────────────────────────
+  // ─── Cycling Queue ────────────────────────────────────────────
 
-  private setupQueueProcessing(): void {
-    if (this.queueCheckTimer) {
-      clearInterval(this.queueCheckTimer);
+  private showNext(): void {
+    if (this.queue.length === 0) return;
+
+    // Wrap index
+    if (this.cycleIndex >= this.queue.length) {
+      this.cycleIndex = 0;
     }
-    this.queueCheckTimer = setInterval(
-      () => void this.processQueue(),
-      this.queueInterval * 1000,
-    );
+
+    const entry = this.queue[this.cycleIndex]!;
+    this.cycleIndex++;
+    this.show(entry.name, HOLD_DURATION);
   }
 
-  private async processQueue(): Promise<void> {
-    // Don't pop if currently showing something
-    if (this.isShowing || this.state !== "idle") return;
-
-    try {
-      const queueRef = query(
-        ref(db, "ravespace/callouts/queue"),
-        orderByChild("timestamp"),
-        limitToFirst(1),
-      );
-      const snapshot = await get(queueRef);
-      if (!snapshot.exists()) return;
-
-      let oldest: { key: string; name: string } | null = null;
-      snapshot.forEach((child) => {
-        if (!oldest) {
-          oldest = { key: child.key!, name: child.val().name };
-        }
-      });
-
-      if (oldest) {
-        const { key, name } = oldest;
-        // Write to active with audience source
-        const { set } = await import("firebase/database");
-        await set(ref(db, "ravespace/callouts/active"), {
-          name,
-          startTime: Date.now(),
-          duration: 5,
-          source: "audience" as const,
-          animationStyle: pickRandomAnimation(),
-        });
-        // Remove from queue
-        await remove(ref(db, `ravespace/callouts/queue/${key}`));
-      }
-    } catch {
-      // Queue read failed — will retry next interval
-    }
+  private scheduleNext(): void {
+    if (this.gapTimer) clearTimeout(this.gapTimer);
+    this.gapTimer = setTimeout(() => {
+      this.gapTimer = null;
+      this.showNext();
+    }, GAP_BETWEEN_CALLOUTS_MS);
   }
 
   // ─── Show / Animation ─────────────────────────────────────────
 
-  private show(name: string, duration: number, animationStyle?: AnimationStyleName): void {
+  private show(name: string, duration: number): void {
     if (this.rafId) cancelAnimationFrame(this.rafId);
 
     this.showDuration = duration;
@@ -188,11 +164,8 @@ export class CalloutOverlay {
     this.textContainer.innerHTML = "";
     this.glowLayer.innerHTML = "";
 
-    // Pick animation
-    const styleName = animationStyle && ANIMATIONS[animationStyle]
-      ? animationStyle
-      : pickRandomAnimation();
-    this.currentAnimation = ANIMATIONS[styleName];
+    // Pick a random animation style each time
+    this.currentAnimation = ANIMATIONS[pickRandomAnimation()];
 
     // Create per-character spans for main text + glow layer
     for (const char of name) {
@@ -270,8 +243,8 @@ export class CalloutOverlay {
           this.state = "idle";
           this.textContainer.style.opacity = "0";
           this.glowLayer.style.opacity = "0";
-          // Clear active so queue can pop next
-          void remove(ref(db, "ravespace/callouts/active"));
+          // Schedule next callout in the cycle
+          this.scheduleNext();
           return; // Stop animation loop
         }
         break;
@@ -289,7 +262,7 @@ export class CalloutOverlay {
       unsub();
     }
     this.unsubscribers = [];
-    if (this.queueCheckTimer) clearInterval(this.queueCheckTimer);
+    if (this.gapTimer) clearTimeout(this.gapTimer);
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.el.remove();
   }
