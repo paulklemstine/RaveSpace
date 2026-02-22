@@ -15,25 +15,25 @@ export interface MoodProfile {
  */
 export const MOOD_PROFILES: Record<EnergyLevel, MoodProfile> = {
   low: {
-    scenes: ["plasma", "tunnel"],
+    scenes: ["plasma", "tunnel", "sacredgeometry", "cosmicweb", "acidwarp"],
     transitions: ["fade", "Dreamy", "DreamyZoom", "morph"],
     speedRange: [0.3, 0.8],
     intensityRange: [0.4, 0.7],
   },
   medium: {
-    scenes: ["plasma", "particles", "tunnel"],
+    scenes: ["plasma", "particles", "tunnel", "kaleidoscope", "fractal", "acidwarp"],
     transitions: ["crosswarp", "Swirl", "ripple", "Radial"],
     speedRange: [0.8, 1.5],
     intensityRange: [0.7, 1.2],
   },
   high: {
-    scenes: ["particles", "tunnel", "plasma"],
+    scenes: ["particles", "tunnel", "fractal", "kaleidoscope", "sacredgeometry"],
     transitions: ["CrossZoom", "burn", "wind", "pixelize"],
     speedRange: [1.2, 2.5],
     intensityRange: [1.0, 1.8],
   },
   peak: {
-    scenes: ["particles", "tunnel"],
+    scenes: ["particles", "tunnel", "fractal", "kaleidoscope", "cosmicweb"],
     transitions: ["GlitchMemories", "GlitchDisplace", "kaleidoscope", "CrossZoom"],
     speedRange: [2.0, 4.0],
     intensityRange: [1.5, 2.0],
