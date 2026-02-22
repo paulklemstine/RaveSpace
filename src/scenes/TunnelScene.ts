@@ -16,13 +16,13 @@ import vertexShader from "../shaders/fullscreen.vert";
 import fragmentShader from "../shaders/tunnel.frag";
 
 const COLOR_SCHEME_MAP: Record<string, number> = {
-  fire: 0,
-  ice: 1,
-  toxic: 2,
-  rainbow: 3,
+  cyber: 0,
+  dmt: 1,
+  void: 2,
+  acid: 3,
 };
 
-const COLOR_SCHEME_REVERSE = ["fire", "ice", "toxic", "rainbow"];
+const COLOR_SCHEME_REVERSE = ["cyber", "dmt", "void", "acid"];
 
 interface TunnelUniforms extends Record<string, IUniform> {
   uTime: IUniform<number>;
@@ -30,6 +30,9 @@ interface TunnelUniforms extends Record<string, IUniform> {
   uBass: IUniform<number>;
   uMid: IUniform<number>;
   uTreble: IUniform<number>;
+  uKick: IUniform<number>;
+  uBeatIntensity: IUniform<number>;
+  uSpectralFlux: IUniform<number>;
   uResolution: IUniform<Vector2>;
   uSpeed: IUniform<number>;
   uRadius: IUniform<number>;
@@ -58,6 +61,9 @@ export class TunnelScene implements ParameterizedScene {
       uBass: { value: 0 },
       uMid: { value: 0 },
       uTreble: { value: 0 },
+      uKick: { value: 0 },
+      uBeatIntensity: { value: 0 },
+      uSpectralFlux: { value: 0 },
       uResolution: { value: new Vector2(1, 1) },
       uSpeed: { value: 1.0 },
       uRadius: { value: 0.8 },
@@ -87,6 +93,9 @@ export class TunnelScene implements ParameterizedScene {
     this.uniforms.uBass.value = audio.bass;
     this.uniforms.uMid.value = audio.mid;
     this.uniforms.uTreble.value = audio.treble;
+    this.uniforms.uKick.value = audio.kick;
+    this.uniforms.uBeatIntensity.value = audio.beatIntensity;
+    this.uniforms.uSpectralFlux.value = audio.spectralFlux;
     this.renderer!.render(this.threeScene, this.camera);
   }
 
@@ -117,7 +126,7 @@ export class TunnelScene implements ParameterizedScene {
       twist: this.uniforms.uTwist.value,
       glowIntensity: this.uniforms.uGlowIntensity.value,
       audioReactivity: this.uniforms.uAudioReactivity.value,
-      colorScheme: COLOR_SCHEME_REVERSE[this.uniforms.uColorScheme.value] ?? "fire",
+      colorScheme: COLOR_SCHEME_REVERSE[this.uniforms.uColorScheme.value] ?? "cyber",
     };
   }
 }

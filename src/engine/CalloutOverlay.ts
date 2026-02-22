@@ -1,21 +1,56 @@
-import { ref, onValue, remove, type Unsubscribe } from "firebase/database";
+import { ref, onValue, query, orderByChild, limitToLast, type Unsubscribe } from "firebase/database";
 import { db } from "../firebase/config";
+import {
+  ANIMATIONS,
+  pickRandomAnimation,
+  type CalloutAnimation,
+} from "./callout-animations";
 
-interface ActiveCallout {
+interface QueueEntry {
+  key: string;
   name: string;
-  startTime: number;
-  duration: number;
+  timestamp: number;
 }
 
+type CalloutState = "idle" | "entering" | "holding" | "exiting";
+
+const ENTRANCE_DURATION = 0.8;
+const EXIT_DURATION = 1.0;
+const GAP_BETWEEN_CALLOUTS_MS = 3_000;
+const MAX_QUEUE_SIZE = 200;
+const HOLD_DURATION = 5;
+
 /**
- * Animated text overlay that shows audience shoutouts on the display.
- * Listens to RTDB for active callout and renders animated text.
+ * Psychedelic animated text overlay for audience shoutouts, VJ callouts, and AI phrases.
+ *
+ * Text rendering uses a two-layer masking approach:
+ *   1. **Glow layer** — blurred, brightly colored duplicate for neon bloom
+ *   2. **Main text** — animated gradient masked through letter shapes via background-clip
+ *      plus mix-blend-mode so the text interacts with the scene underneath
+ *
+ * Keeps all audience submissions and cycles through them endlessly with random animations.
  */
 export class CalloutOverlay {
   private el: HTMLDivElement;
-  private nameEl: HTMLDivElement;
-  private unsubscribe: Unsubscribe | null = null;
-  private animationTimeout: ReturnType<typeof setTimeout> | null = null;
+  private textContainer: HTMLDivElement;
+  private glowLayer: HTMLDivElement;
+  private charSpans: HTMLSpanElement[] = [];
+  private glowSpans: HTMLSpanElement[] = [];
+  private unsubscribers: Unsubscribe[] = [];
+  private rafId = 0;
+  private showStartTime = 0;
+  private showDuration = HOLD_DURATION;
+  private isShowing = false;
+
+  // Animation state machine
+  private state: CalloutState = "idle";
+  private stateStartTime = 0;
+  private currentAnimation: CalloutAnimation = ANIMATIONS.wave;
+
+  // Cycling queue — keep all entries, round-robin through them
+  private queue: QueueEntry[] = [];
+  private cycleIndex = 0;
+  private gapTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     this.el = document.createElement("div");
@@ -30,64 +65,219 @@ export class CalloutOverlay {
       justify-content: center;
       pointer-events: none;
       z-index: 200;
+      mix-blend-mode: screen;
     `;
 
-    this.nameEl = document.createElement("div");
-    this.nameEl.style.cssText = `
-      font-family: system-ui, -apple-system, sans-serif;
+    // Glow layer (behind text, blurred duplicate for neon bloom)
+    this.glowLayer = document.createElement("div");
+    this.glowLayer.style.cssText = `
+      position: absolute;
+      display: flex;
+      gap: 0.02em;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Impact', 'Arial Black', system-ui, sans-serif;
       font-size: clamp(3rem, 8vw, 8rem);
       font-weight: 900;
-      color: white;
-      text-shadow: 0 0 40px rgba(168, 85, 247, 0.8), 0 0 80px rgba(168, 85, 247, 0.4);
-      letter-spacing: 0.1em;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      filter: blur(18px) brightness(1.5);
+      opacity: 0;
+    `;
+    this.el.appendChild(this.glowLayer);
+
+    // Main text container — gradient masked through letter shapes
+    this.textContainer = document.createElement("div");
+    this.textContainer.style.cssText = `
+      position: relative;
+      display: flex;
+      gap: 0.02em;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Impact', 'Arial Black', system-ui, sans-serif;
+      font-size: clamp(3rem, 8vw, 8rem);
+      font-weight: 900;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
       opacity: 0;
-      transform: scale(0.5);
-      transition: opacity 0.4s ease-out, transform 0.4s ease-out;
     `;
-    this.el.appendChild(this.nameEl);
+    this.el.appendChild(this.textContainer);
+
     document.body.appendChild(this.el);
   }
 
   start(): void {
-    const activeRef = ref(db, "ravespace/callouts/active");
-    this.unsubscribe = onValue(activeRef, (snapshot) => {
-      const data = snapshot.val() as ActiveCallout | null;
-      if (data?.name) {
-        this.show(data.name, data.duration ?? 5);
+    // Listen for queue changes — keep all entries in memory, cycle through them
+    const queueRef = query(
+      ref(db, "ravespace/callouts/queue"),
+      orderByChild("timestamp"),
+      limitToLast(MAX_QUEUE_SIZE),
+    );
+    const unsub = onValue(queueRef, (snapshot) => {
+      const entries: QueueEntry[] = [];
+      snapshot.forEach((child) => {
+        const val = child.val();
+        if (val?.name) {
+          entries.push({
+            key: child.key!,
+            name: val.name,
+            timestamp: val.timestamp ?? 0,
+          });
+        }
+      });
+      // Sort by timestamp ascending
+      entries.sort((a, b) => a.timestamp - b.timestamp);
+      this.queue = entries;
+
+      // If we just got our first entry and nothing is showing, kick off the cycle
+      if (entries.length > 0 && this.state === "idle" && !this.gapTimer) {
+        this.showNext();
       }
     });
+    this.unsubscribers.push(unsub);
   }
 
-  private show(name: string, duration: number): void {
-    // Clear any pending hide
-    if (this.animationTimeout) {
-      clearTimeout(this.animationTimeout);
+  // ─── Cycling Queue ────────────────────────────────────────────
+
+  private showNext(): void {
+    if (this.queue.length === 0) return;
+
+    // Wrap index
+    if (this.cycleIndex >= this.queue.length) {
+      this.cycleIndex = 0;
     }
 
-    this.nameEl.textContent = name;
-
-    // Animate in
-    requestAnimationFrame(() => {
-      this.nameEl.style.opacity = "1";
-      this.nameEl.style.transform = "scale(1)";
-    });
-
-    // Animate out after duration
-    this.animationTimeout = setTimeout(() => {
-      this.nameEl.style.opacity = "0";
-      this.nameEl.style.transform = "scale(1.2)";
-
-      // Clear active callout after fade out
-      setTimeout(() => {
-        void remove(ref(db, "ravespace/callouts/active"));
-      }, 500);
-    }, duration * 1000);
+    const entry = this.queue[this.cycleIndex]!;
+    this.cycleIndex++;
+    this.show(entry.name, HOLD_DURATION);
   }
 
+  private scheduleNext(): void {
+    if (this.gapTimer) clearTimeout(this.gapTimer);
+    this.gapTimer = setTimeout(() => {
+      this.gapTimer = null;
+      this.showNext();
+    }, GAP_BETWEEN_CALLOUTS_MS);
+  }
+
+  // ─── Show / Animation ─────────────────────────────────────────
+
+  private show(name: string, duration: number): void {
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+
+    this.showDuration = duration;
+    this.charSpans = [];
+    this.glowSpans = [];
+    this.textContainer.innerHTML = "";
+    this.glowLayer.innerHTML = "";
+
+    // Pick a random animation style each time
+    this.currentAnimation = ANIMATIONS[pickRandomAnimation()];
+
+    // Create per-character spans for main text + glow layer
+    for (const char of name) {
+      const ch = char === " " ? "\u00A0" : char;
+
+      // Main character span — animated gradient masked to letter shape
+      const span = document.createElement("span");
+      span.textContent = ch;
+      span.style.cssText = `
+        display: inline-block;
+        background: linear-gradient(
+          135deg,
+          #ff00ff, #ff0066, #ff6600, #ffff00,
+          #00ff66, #00ffff, #0066ff, #9900ff, #ff00ff
+        );
+        background-size: 600% 600%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        -webkit-text-stroke: 1px rgba(255, 255, 255, 0.15);
+        paint-order: stroke fill;
+      `;
+      this.textContainer.appendChild(span);
+      this.charSpans.push(span);
+
+      // Glow duplicate — solid vibrant color, blurred by parent
+      const glow = document.createElement("span");
+      glow.textContent = ch;
+      glow.style.cssText = `
+        display: inline-block;
+        color: #ff00ff;
+        text-shadow:
+          0 0 10px currentColor,
+          0 0 30px currentColor,
+          0 0 60px currentColor;
+      `;
+      this.glowLayer.appendChild(glow);
+      this.glowSpans.push(glow);
+    }
+
+    this.isShowing = true;
+    this.showStartTime = performance.now();
+    this.state = "entering";
+    this.stateStartTime = performance.now();
+
+    this.textContainer.style.opacity = "1";
+    this.glowLayer.style.opacity = "0.8";
+
+    this.animate();
+  }
+
+  private animate = (): void => {
+    const now = performance.now();
+    const t = (now - this.showStartTime) / 1000;
+    const stateElapsed = (now - this.stateStartTime) / 1000;
+
+    switch (this.state) {
+      case "entering": {
+        const progress = Math.min(1, stateElapsed / ENTRANCE_DURATION);
+        this.currentAnimation.entrance(this.charSpans, this.glowSpans, t, progress);
+        if (progress >= 1) {
+          this.state = "holding";
+          this.stateStartTime = now;
+        }
+        break;
+      }
+
+      case "holding": {
+        this.currentAnimation.hold(this.charSpans, this.glowSpans, t);
+        if (stateElapsed >= this.showDuration) {
+          this.state = "exiting";
+          this.stateStartTime = now;
+          this.isShowing = false;
+        }
+        break;
+      }
+
+      case "exiting": {
+        const progress = Math.min(1, stateElapsed / EXIT_DURATION);
+        this.currentAnimation.exit(this.charSpans, this.glowSpans, t, progress);
+        if (progress >= 1) {
+          this.state = "idle";
+          this.textContainer.style.opacity = "0";
+          this.glowLayer.style.opacity = "0";
+          // Schedule next callout in the cycle
+          this.scheduleNext();
+          return; // Stop animation loop
+        }
+        break;
+      }
+
+      case "idle":
+        return;
+    }
+
+    this.rafId = requestAnimationFrame(this.animate);
+  };
+
   dispose(): void {
-    this.unsubscribe?.();
-    if (this.animationTimeout) clearTimeout(this.animationTimeout);
+    for (const unsub of this.unsubscribers) {
+      unsub();
+    }
+    this.unsubscribers = [];
+    if (this.gapTimer) clearTimeout(this.gapTimer);
+    if (this.rafId) cancelAnimationFrame(this.rafId);
     this.el.remove();
   }
 }

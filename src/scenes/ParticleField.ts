@@ -32,6 +32,9 @@ const VERTEX_SHADER = `
   uniform float uTreble;
   uniform float uEnergy;
   uniform float uBeat;
+  uniform float uKick;
+  uniform float uBeatIntensity;
+  uniform float uSpectralFlux;
   uniform float uAudioReactivity;
   uniform float uSpread;
 
@@ -41,15 +44,18 @@ const VERTEX_SHADER = `
   void main() {
     vColor = aColor;
 
-    // Radial pulse from bass
+    // Radial pulse: kick for sharp punch + bass for sustain
     vec3 pos = aOrigPos;
     float dist = length(pos);
-    float bassPulse = 1.0 + uBass * 0.4 * uAudioReactivity;
-    pos *= bassPulse;
+    float kickPulse = 1.0 + uKick * 0.6 * uAudioReactivity + uBass * 0.2 * uAudioReactivity;
+    pos *= kickPulse;
 
-    // Beat explosion burst
-    float burst = uBeat * 1.5 * uAudioReactivity;
+    // Beat explosion burst — proportional to beat intensity
+    float burst = uBeat * (1.0 + uBeatIntensity * 2.0) * uAudioReactivity;
     pos += normalize(pos) * burst;
+
+    // Flux jitter: transients displace particles
+    pos += normalize(pos) * uSpectralFlux * 0.3 * uAudioReactivity;
 
     // Mid-frequency color shift is handled in fragment
     // Treble size oscillation
@@ -113,8 +119,8 @@ export class ParticleField implements ParameterizedScene {
   update(time: number, audio: AudioFeatures): void {
     if (!this.material || !this.points) return;
 
-    // Beat decay (exponential falloff)
-    if (audio.beat) this.beatDecay = 1.0;
+    // Beat decay — proportional to beat intensity
+    this.beatDecay = Math.max(this.beatDecay, audio.beatIntensity);
     this.beatDecay *= 0.92;
 
     // Update uniforms
@@ -124,11 +130,14 @@ export class ParticleField implements ParameterizedScene {
     this.material.uniforms.uTreble!.value = audio.treble;
     this.material.uniforms.uEnergy!.value = audio.energy;
     this.material.uniforms.uBeat!.value = this.beatDecay;
+    this.material.uniforms.uKick!.value = audio.kick;
+    this.material.uniforms.uBeatIntensity!.value = audio.beatIntensity;
+    this.material.uniforms.uSpectralFlux!.value = audio.spectralFlux;
     this.material.uniforms.uAudioReactivity!.value = this.audioReactivity;
     this.material.uniforms.uSpread!.value = this.spread;
 
-    // Camera orbit
-    this.orbitAngle += this.orbitSpeed * 0.005 * (1.0 + audio.energy * this.audioReactivity);
+    // Camera orbit — kick adds burst to orbit speed
+    this.orbitAngle += this.orbitSpeed * 0.005 * (1.0 + audio.energy * this.audioReactivity + audio.kick * 0.5);
     const r = 15;
     this.camera.position.set(
       Math.cos(this.orbitAngle) * r,
@@ -257,6 +266,9 @@ export class ParticleField implements ParameterizedScene {
         uTreble: { value: 0 },
         uEnergy: { value: 0 },
         uBeat: { value: 0 },
+        uKick: { value: 0 },
+        uBeatIntensity: { value: 0 },
+        uSpectralFlux: { value: 0 },
         uAudioReactivity: { value: this.audioReactivity },
         uSpread: { value: this.spread },
       },

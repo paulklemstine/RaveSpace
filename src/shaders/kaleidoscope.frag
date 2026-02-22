@@ -8,24 +8,33 @@ uniform float uBass;
 uniform float uMid;
 uniform float uTreble;
 uniform vec2 uResolution;
+
 uniform float uSpeed;
 uniform float uSegments;
 uniform float uZoom;
 uniform float uAudioReactivity;
-uniform float uColorShift;
-uniform float uComplexity;
+uniform int uColorScheme;
 
-#define PI 3.14159265359
-#define TAU 6.28318530718
+#define PI 3.14159265
+#define TAU 6.28318530
 
-mat2 rot(float a) {
-  float s = sin(a), c = cos(a);
-  return mat2(c, -s, s, c);
+// --- Cosine palettes ---
+vec3 getColor(float t) {
+  if (uColorScheme == 0) // neon
+    return 0.5 + 0.5 * cos(TAU * (t + vec3(0.0, 0.1, 0.2)));
+  if (uColorScheme == 1) // crystal
+    return 0.5 + 0.5 * cos(TAU * (t * 0.7 + vec3(0.1, 0.2, 0.35)));
+  if (uColorScheme == 2) // fire
+    return 0.5 + 0.5 * cos(TAU * (t * 0.5 + vec3(0.0, 0.1, 0.25)));
+  // spectrum
+  return 0.5 + 0.5 * cos(TAU * (t * 2.0 + vec3(0.0, 0.33, 0.67)));
 }
 
-// Simplex-like noise
-float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+// --- Noise functions ---
+float hash21(vec2 p) {
+  p = fract(p * vec2(234.34, 435.345));
+  p += dot(p, p + 34.23);
+  return fract(p.x * p.y);
 }
 
 float noise(vec2 p) {
@@ -33,141 +42,129 @@ float noise(vec2 p) {
   vec2 f = fract(p);
   f = f * f * (3.0 - 2.0 * f);
 
-  float a = hash(i);
-  float b = hash(i + vec2(1.0, 0.0));
-  float c = hash(i + vec2(0.0, 1.0));
-  float d = hash(i + vec2(1.0, 1.0));
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
 
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-// FBM (Fractal Brownian Motion)
-float fbm(vec2 p, float time) {
-  float value = 0.0;
-  float amplitude = 0.5;
-  float frequency = 1.0;
-
-  for (int i = 0; i < 6; i++) {
-    value += amplitude * noise(p * frequency + time * 0.1 * float(i + 1));
-    p = rot(0.5) * p;
-    frequency *= 2.0;
-    amplitude *= 0.5;
+float fbm(vec2 p) {
+  float f = 0.0;
+  float amp = 0.5;
+  for (int i = 0; i < 5; i++) {
+    f += amp * noise(p);
+    p *= 2.1;
+    amp *= 0.5;
   }
-  return value;
+  return f;
 }
 
-// Domain warping
-vec2 warp(vec2 p, float time, float intensity) {
-  float n1 = fbm(p + vec2(1.7, 9.2) + time * 0.15, time);
-  float n2 = fbm(p + vec2(8.3, 2.8) + time * 0.12, time);
-  return p + vec2(n1, n2) * intensity;
-}
+// Kaleidoscope fold
+vec2 kaleidoscope(vec2 p, float segments) {
+  float angle = atan(p.y, p.x);
+  float r = length(p);
 
-// Psychedelic pattern generator
-float psychPattern(vec2 p, float time) {
-  float d = 0.0;
+  // Fold angle into sector
+  float sector = TAU / segments;
+  angle = mod(angle, sector);
+  // Mirror within sector
+  angle = abs(angle - sector * 0.5);
 
-  // Layered sine waves
-  d += sin(p.x * 3.0 + time) * 0.5;
-  d += sin(p.y * 4.0 - time * 0.7) * 0.3;
-  d += sin((p.x + p.y) * 5.0 + time * 1.3) * 0.2;
-  d += sin(length(p) * 8.0 - time * 2.0) * 0.4;
-
-  // Add noise detail
-  d += fbm(p * 2.0, time) * 0.5;
-
-  return d;
+  return vec2(cos(angle), sin(angle)) * r;
 }
 
 void main() {
-  vec2 uv = (vUv - 0.5) * 2.0;
-  uv.x *= uResolution.x / uResolution.y;
+  vec2 uv = vUv * 2.0 - 1.0;
+  float aspect = uResolution.x / uResolution.y;
+  uv.x *= aspect;
 
-  float time = uTime * uSpeed;
-  float ar = uAudioReactivity;
-  float bass = uBass * ar;
-  float mid = uMid * ar;
-  float treble = uTreble * ar;
-  float energy = uEnergy * ar;
+  float time = uTime * uSpeed * 0.5;
 
-  // Convert to polar
-  float r = length(uv);
-  float angle = atan(uv.y, uv.x);
+  // Audio reactivity
+  float bassR = uBass * uAudioReactivity;
+  float midR = uMid * uAudioReactivity;
+  float trebleR = uTreble * uAudioReactivity;
+  float energyR = uEnergy * uAudioReactivity;
 
-  // Kaleidoscope folding
-  float segments = floor(uSegments);
-  float segAngle = TAU / segments;
+  // Slowly rotate the whole thing
+  float globalRot = time * 0.1 + bassR * 0.2;
+  float c = cos(globalRot);
+  float s = sin(globalRot);
+  uv = vec2(uv.x * c - uv.y * s, uv.x * s + uv.y * c);
 
-  // Fold angle into segment
-  angle = mod(angle, segAngle);
-  // Mirror fold
-  angle = abs(angle - segAngle * 0.5);
+  // Apply kaleidoscope fold
+  float segs = floor(uSegments);
+  vec2 kp = kaleidoscope(uv, segs);
 
-  // Audio-reactive rotation
-  float rotation = time * 0.2 + bass * 0.5;
-  angle += rotation;
+  // Zoom and pan the base pattern
+  float z = uZoom * (1.0 + sin(time * 0.3) * 0.2 + bassR * 0.3);
+  vec2 patternUV = kp * z;
 
-  // Back to cartesian with zoom
-  float zoom = uZoom * (1.0 + bass * 0.2);
-  vec2 p = vec2(cos(angle), sin(angle)) * r / zoom;
+  // Flowing offset
+  patternUV += vec2(time * 0.3, time * 0.2);
 
-  // Add slow drift
-  p += vec2(sin(time * 0.13), cos(time * 0.17)) * 0.5;
-
-  // Domain warp for psychedelic distortion
-  float warpIntensity = 0.3 + mid * 0.3 + uComplexity * 0.5;
-  p = warp(p, time, warpIntensity);
-
-  // Generate pattern
-  float pattern = psychPattern(p, time);
-
-  // Second layer with different scale
-  float pattern2 = psychPattern(p * 2.0 + 3.0, time * 0.7);
-
-  // Coloring
-  vec3 col1 = vec3(
-    sin(pattern * 3.0 + time * 0.5 + uColorShift * TAU) * 0.5 + 0.5,
-    sin(pattern * 3.0 + time * 0.5 + uColorShift * TAU + TAU / 3.0) * 0.5 + 0.5,
-    sin(pattern * 3.0 + time * 0.5 + uColorShift * TAU + 2.0 * TAU / 3.0) * 0.5 + 0.5
+  // --- Base pattern: domain-warped noise ---
+  // First warp layer
+  vec2 warp1 = vec2(
+    fbm(patternUV + vec2(time * 0.1, 0.0)),
+    fbm(patternUV + vec2(0.0, time * 0.12))
   );
 
-  vec3 col2 = vec3(
-    sin(pattern2 * 4.0 + time * 0.3 + 1.0) * 0.5 + 0.5,
-    sin(pattern2 * 4.0 + time * 0.3 + 2.0) * 0.5 + 0.5,
-    sin(pattern2 * 4.0 + time * 0.3 + 3.0) * 0.5 + 0.5
+  // Second warp layer (more psychedelic)
+  vec2 warp2 = vec2(
+    fbm(patternUV + warp1 * 2.0 + vec2(time * 0.05, 1.7)),
+    fbm(patternUV + warp1 * 2.0 + vec2(3.2, time * 0.07))
   );
 
-  vec3 col = mix(col1, col2, 0.5 + sin(r * 5.0 + time) * 0.3);
+  // Audio drives warp intensity
+  float warpAmount = 1.5 + energyR * 1.0;
+  vec2 finalUV = patternUV + warp2 * warpAmount;
 
-  // Edge highlighting
-  float edgeDetail = abs(fract(pattern * 3.0) - 0.5) * 2.0;
-  edgeDetail = smoothstep(0.4, 0.5, edgeDetail);
-  col = mix(col, col * 1.5 + 0.1, edgeDetail * treble);
+  // Get noise value
+  float n = fbm(finalUV);
 
-  // Center glow
-  float centerGlow = exp(-r * 2.0) * energy;
-  col += centerGlow * vec3(0.6, 0.3, 0.9);
+  // Additional detail layer
+  float detail = fbm(finalUV * 3.0 + time * 0.2);
+  n = n * 0.7 + detail * 0.3;
 
-  // Radial color bands
-  float bands = sin(r * 15.0 - time * 3.0 + bass * 10.0) * 0.5 + 0.5;
-  col = mix(col, col * vec3(1.2, 0.8, 1.3), bands * 0.2);
+  // --- Color mapping ---
+  float colorT = n * 2.0 + time * 0.08;
+  // Add angular variation for more kaleidoscopic feel (use folded coords for seamless wrap)
+  float foldedAngle = atan(kp.y, kp.x);
+  colorT += foldedAngle / TAU * 0.5;
+  // Mid frequencies shift the color
+  colorT += midR * 0.3;
 
-  // Segment edge glow (thin lines at fold boundaries)
-  float origAngle = atan(uv.y, uv.x);
-  float segEdge = abs(fract(origAngle / segAngle + 0.5) - 0.5) * 2.0;
-  segEdge = 1.0 - smoothstep(0.0, 0.05, segEdge * r);
-  col += segEdge * vec3(0.5, 0.3, 0.8) * 0.4 * (0.5 + treble);
+  vec3 color = getColor(colorT);
 
-  // Beat pulse
-  col *= 1.0 + energy * energy * 0.5;
+  // Brightness modulation from the pattern
+  float brightness = 0.4 + n * 0.8;
 
-  // Vignette
-  float vig = 1.0 - r * 0.3;
-  col *= clamp(vig, 0.0, 1.0);
+  // Edge detection in the pattern for glowing lines
+  float nx = fbm(finalUV + vec2(0.01, 0.0));
+  float ny = fbm(finalUV + vec2(0.0, 0.01));
+  float edge = length(vec2(nx - n, ny - n)) * 30.0;
+  edge = smoothstep(0.0, 1.0, edge);
 
-  // Saturation boost
-  float luma = dot(col, vec3(0.299, 0.587, 0.114));
-  col = mix(vec3(luma), col, 1.3);
+  // Glow on edges
+  color += getColor(colorT + 0.3) * edge * 0.8;
 
-  gl_FragColor = vec4(col, 1.0);
+  // Treble sparkle: high-frequency shimmer
+  float sparkle = noise(finalUV * 20.0 + time * 3.0);
+  sparkle = pow(sparkle, 8.0) * trebleR * 3.0;
+  color += vec3(1.0, 0.95, 0.9) * sparkle;
+
+  // Apply brightness
+  color *= brightness;
+
+  // Energy global brightness
+  color *= 0.6 + energyR * 0.6;
+
+  // Radial fade (softer towards edges)
+  float dist = length(vUv * 2.0 - 1.0);
+  color *= 1.0 - dist * 0.2;
+
+  gl_FragColor = vec4(color, 1.0);
 }

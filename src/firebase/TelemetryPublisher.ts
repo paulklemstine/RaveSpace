@@ -58,6 +58,9 @@ export class TelemetryPublisher {
       spectralCentroid: safe(Math.round(features.spectralCentroid * 1000) / 1000),
       beat: features.beat,
       bpm: safe(Math.round(features.bpm)),
+      kick: safe(Math.round(features.kick * 1000) / 1000),
+      beatIntensity: safe(Math.round(features.beatIntensity * 1000) / 1000),
+      spectralFlux: safe(Math.round(features.spectralFlux * 1000) / 1000),
       timestamp: Date.now(),
     });
 

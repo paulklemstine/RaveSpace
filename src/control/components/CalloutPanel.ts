@@ -1,5 +1,6 @@
 import { ref, set, onValue, remove, onChildAdded, type Unsubscribe } from "firebase/database";
 import { db } from "../../firebase/config";
+import { ANIMATION_STYLES, type AnimationStyleName } from "../../engine/callout-animations";
 
 interface QueueItem {
   key: string;
@@ -13,6 +14,9 @@ export class CalloutPanel {
   private manualInput: HTMLInputElement;
   private autoShowCheck: HTMLInputElement;
   private intervalInput: HTMLInputElement;
+  private animStyleSelect: HTMLSelectElement;
+  private aiPhrasesCheck: HTMLInputElement;
+  private aiIntervalInput: HTMLInputElement;
   private unsubscribers: Unsubscribe[] = [];
   private autoShowTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -25,7 +29,7 @@ export class CalloutPanel {
     heading.textContent = "CALLOUTS";
     section.appendChild(heading);
 
-    // Manual text input
+    // Manual text input + animation style row
     const manualRow = document.createElement("div");
     manualRow.className = "flex gap-2";
     this.manualInput = document.createElement("input");
@@ -49,6 +53,31 @@ export class CalloutPanel {
     manualRow.append(this.manualInput, sendBtn);
     section.appendChild(manualRow);
 
+    // Animation style dropdown
+    const styleRow = document.createElement("div");
+    styleRow.className = "flex items-center gap-2";
+    const styleLabel = document.createElement("span");
+    styleLabel.className = "text-xs text-gray-500";
+    styleLabel.textContent = "Animation:";
+    this.animStyleSelect = document.createElement("select");
+    this.animStyleSelect.className =
+      "bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white cursor-pointer";
+
+    // Random option
+    const randomOpt = document.createElement("option");
+    randomOpt.value = "random";
+    randomOpt.textContent = "Random";
+    this.animStyleSelect.appendChild(randomOpt);
+
+    for (const style of ANIMATION_STYLES) {
+      const opt = document.createElement("option");
+      opt.value = style;
+      opt.textContent = style;
+      this.animStyleSelect.appendChild(opt);
+    }
+    styleRow.append(styleLabel, this.animStyleSelect);
+    section.appendChild(styleRow);
+
     // Queue section
     const queueHeader = document.createElement("div");
     queueHeader.className = "flex items-center justify-between";
@@ -56,13 +85,23 @@ export class CalloutPanel {
     queueTitle.className = "text-xs text-gray-500";
     queueTitle.textContent = "AUDIENCE QUEUE";
 
+    const queueBtns = document.createElement("div");
+    queueBtns.className = "flex gap-2";
+
     const nextBtn = document.createElement("button");
     nextBtn.textContent = "Show Next";
     nextBtn.className =
       "text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 transition-colors cursor-pointer";
     nextBtn.addEventListener("click", () => this.showNext());
 
-    queueHeader.append(queueTitle, nextBtn);
+    const clearBtn = document.createElement("button");
+    clearBtn.textContent = "Clear All";
+    clearBtn.className =
+      "text-xs px-2 py-1 rounded bg-red-900/50 hover:bg-red-800/50 text-red-400 transition-colors cursor-pointer";
+    clearBtn.addEventListener("click", () => this.clearQueue());
+
+    queueBtns.append(nextBtn, clearBtn);
+    queueHeader.append(queueTitle, queueBtns);
     section.appendChild(queueHeader);
 
     this.queueListEl = document.createElement("div");
@@ -102,6 +141,38 @@ export class CalloutPanel {
     autoRow.append(autoLabel, intervalLabel, this.intervalInput, secLabel);
     section.appendChild(autoRow);
 
+    // AI Phrases settings
+    const aiRow = document.createElement("div");
+    aiRow.className = "flex items-center gap-3 mt-2";
+
+    const aiLabel = document.createElement("label");
+    aiLabel.className = "flex items-center gap-1.5 text-sm text-gray-300 cursor-pointer";
+    this.aiPhrasesCheck = document.createElement("input");
+    this.aiPhrasesCheck.type = "checkbox";
+    this.aiPhrasesCheck.className = "accent-cyan-500 cursor-pointer";
+    this.aiPhrasesCheck.addEventListener("change", () => this.updateSettings());
+    const aiText = document.createElement("span");
+    aiText.textContent = "AI Phrases";
+    aiLabel.append(this.aiPhrasesCheck, aiText);
+
+    const aiIntervalLabel = document.createElement("label");
+    aiIntervalLabel.className = "text-sm text-gray-400";
+    aiIntervalLabel.textContent = "every";
+    this.aiIntervalInput = document.createElement("input");
+    this.aiIntervalInput.type = "number";
+    this.aiIntervalInput.min = "15";
+    this.aiIntervalInput.max = "300";
+    this.aiIntervalInput.value = "45";
+    this.aiIntervalInput.className =
+      "w-14 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white text-center";
+    this.aiIntervalInput.addEventListener("change", () => this.updateSettings());
+    const aiSecLabel = document.createElement("span");
+    aiSecLabel.className = "text-sm text-gray-400";
+    aiSecLabel.textContent = "s";
+
+    aiRow.append(aiLabel, aiIntervalLabel, this.aiIntervalInput, aiSecLabel);
+    section.appendChild(aiRow);
+
     // QR hint
     const qrHint = document.createElement("div");
     qrHint.className = "text-xs text-gray-600 mt-2";
@@ -137,6 +208,8 @@ export class CalloutPanel {
         if (data) {
           if (data.autoShow !== undefined) this.autoShowCheck.checked = data.autoShow;
           if (data.interval !== undefined) this.intervalInput.value = String(data.interval);
+          if (data.aiPhrasesEnabled !== undefined) this.aiPhrasesCheck.checked = data.aiPhrasesEnabled;
+          if (data.aiPhraseInterval !== undefined) this.aiIntervalInput.value = String(data.aiPhraseInterval);
           this.setupAutoShow();
         }
       }),
@@ -153,7 +226,12 @@ export class CalloutPanel {
       const row = document.createElement("div");
       row.className = "flex items-center justify-between px-2 py-1 bg-gray-800/50 rounded";
       const nameSpan = document.createElement("span");
+      nameSpan.className = "truncate flex-1";
       nameSpan.textContent = item.name;
+
+      const btnGroup = document.createElement("div");
+      btnGroup.className = "flex gap-2 ml-2 shrink-0";
+
       const showBtn = document.createElement("button");
       showBtn.textContent = "Show";
       showBtn.className = "text-xs text-purple-400 hover:text-purple-300 cursor-pointer";
@@ -161,16 +239,33 @@ export class CalloutPanel {
         this.showCallout(item.name);
         this.removeFromQueue(item.key);
       });
-      row.append(nameSpan, showBtn);
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.textContent = "\u2715";
+      deleteBtn.className = "text-xs text-red-500 hover:text-red-400 cursor-pointer";
+      deleteBtn.title = "Delete";
+      deleteBtn.addEventListener("click", () => {
+        this.removeFromQueue(item.key);
+      });
+
+      btnGroup.append(showBtn, deleteBtn);
+      row.append(nameSpan, btnGroup);
       this.queueListEl.appendChild(row);
     }
   }
 
   private showCallout(name: string): void {
+    const selectedStyle = this.animStyleSelect.value;
+    const animationStyle = selectedStyle === "random"
+      ? undefined
+      : selectedStyle as AnimationStyleName;
+
     void set(ref(db, "ravespace/callouts/active"), {
       name,
       startTime: Date.now(),
       duration: 5,
+      source: "vj" as const,
+      animationStyle,
     });
   }
 
@@ -188,10 +283,18 @@ export class CalloutPanel {
     this.renderQueue();
   }
 
+  private clearQueue(): void {
+    void remove(ref(db, "ravespace/callouts/queue"));
+    this.queue = [];
+    this.renderQueue();
+  }
+
   private updateSettings(): void {
     void set(ref(db, "ravespace/callouts/settings"), {
       autoShow: this.autoShowCheck.checked,
       interval: parseInt(this.intervalInput.value, 10) || 30,
+      aiPhrasesEnabled: this.aiPhrasesCheck.checked,
+      aiPhraseInterval: parseInt(this.aiIntervalInput.value, 10) || 45,
     });
   }
 

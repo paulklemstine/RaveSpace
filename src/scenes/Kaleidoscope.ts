@@ -1,12 +1,13 @@
 import {
-  Scene as ThreeScene,
   OrthographicCamera,
-  Mesh,
   PlaneGeometry,
   ShaderMaterial,
+  Mesh,
+  Scene as ThreeScene,
   Vector2,
-  type WebGLRenderer,
+  type IUniform,
 } from "three";
+import type { WebGLRenderer } from "three";
 import type { ParameterizedScene } from "../types/scene";
 import type { AudioFeatures } from "../types/audio";
 import type { ParamDescriptor, ParamValues } from "../types/params";
@@ -14,17 +15,40 @@ import { SCENE_REGISTRY } from "./registry";
 import vertexShader from "../shaders/fullscreen.vert";
 import fragmentShader from "../shaders/kaleidoscope.frag";
 
+const COLOR_SCHEME_MAP: Record<string, number> = {
+  neon: 0,
+  crystal: 1,
+  fire: 2,
+  spectrum: 3,
+};
+
+const COLOR_SCHEME_REVERSE = ["neon", "crystal", "fire", "spectrum"];
+
+interface KaleidoscopeUniforms extends Record<string, IUniform> {
+  uTime: IUniform<number>;
+  uEnergy: IUniform<number>;
+  uBass: IUniform<number>;
+  uMid: IUniform<number>;
+  uTreble: IUniform<number>;
+  uResolution: IUniform<Vector2>;
+  uSpeed: IUniform<number>;
+  uSegments: IUniform<number>;
+  uZoom: IUniform<number>;
+  uAudioReactivity: IUniform<number>;
+  uColorScheme: IUniform<number>;
+}
+
 const METADATA = SCENE_REGISTRY.find((s) => s.id === "kaleidoscope")!;
 
 export class Kaleidoscope implements ParameterizedScene {
   readonly params: readonly ParamDescriptor[] = METADATA.params;
 
-  private threeScene = new ThreeScene();
   private camera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  private renderer: WebGLRenderer | null = null;
-  private mesh: Mesh;
+  private threeScene = new ThreeScene();
   private material: ShaderMaterial;
-  private uniforms: Record<string, { value: unknown }>;
+  private uniforms: KaleidoscopeUniforms;
+  private mesh: Mesh;
+  private renderer: WebGLRenderer | null = null;
 
   constructor() {
     this.uniforms = {
@@ -36,24 +60,23 @@ export class Kaleidoscope implements ParameterizedScene {
       uResolution: { value: new Vector2(1, 1) },
       uSpeed: { value: 1.0 },
       uSegments: { value: 8.0 },
-      uZoom: { value: 1.0 },
+      uZoom: { value: 2.0 },
       uAudioReactivity: { value: 1.0 },
-      uColorShift: { value: 0.0 },
-      uComplexity: { value: 0.5 },
+      uColorScheme: { value: 0 },
     };
+
     this.material = new ShaderMaterial({
       vertexShader,
       fragmentShader,
       uniforms: this.uniforms,
     });
+
     this.mesh = new Mesh(new PlaneGeometry(2, 2), this.material);
     this.threeScene.add(this.mesh);
   }
 
   init(renderer: WebGLRenderer): void {
     this.renderer = renderer;
-    const size = renderer.getSize(new Vector2());
-    this.uniforms.uResolution.value = size;
   }
 
   update(time: number, audio: AudioFeatures): void {
@@ -66,7 +89,12 @@ export class Kaleidoscope implements ParameterizedScene {
   }
 
   resize(width: number, height: number): void {
-    this.uniforms.uResolution.value = new Vector2(width, height);
+    this.uniforms.uResolution.value.set(width, height);
+  }
+
+  dispose(): void {
+    this.mesh.geometry.dispose();
+    this.material.dispose();
   }
 
   setParams(values: ParamValues): void {
@@ -74,23 +102,18 @@ export class Kaleidoscope implements ParameterizedScene {
     if (values.segments !== undefined) this.uniforms.uSegments.value = values.segments as number;
     if (values.zoom !== undefined) this.uniforms.uZoom.value = values.zoom as number;
     if (values.audioReactivity !== undefined) this.uniforms.uAudioReactivity.value = values.audioReactivity as number;
-    if (values.colorShift !== undefined) this.uniforms.uColorShift.value = values.colorShift as number;
-    if (values.complexity !== undefined) this.uniforms.uComplexity.value = values.complexity as number;
+    if (values.colorScheme !== undefined) {
+      this.uniforms.uColorScheme.value = COLOR_SCHEME_MAP[values.colorScheme as string] ?? 0;
+    }
   }
 
   getParams(): ParamValues {
     return {
-      speed: this.uniforms.uSpeed.value as number,
-      segments: this.uniforms.uSegments.value as number,
-      zoom: this.uniforms.uZoom.value as number,
-      audioReactivity: this.uniforms.uAudioReactivity.value as number,
-      colorShift: this.uniforms.uColorShift.value as number,
-      complexity: this.uniforms.uComplexity.value as number,
+      speed: this.uniforms.uSpeed.value,
+      segments: this.uniforms.uSegments.value,
+      zoom: this.uniforms.uZoom.value,
+      audioReactivity: this.uniforms.uAudioReactivity.value,
+      colorScheme: COLOR_SCHEME_REVERSE[this.uniforms.uColorScheme.value] ?? "neon",
     };
-  }
-
-  dispose(): void {
-    this.mesh.geometry.dispose();
-    this.material.dispose();
   }
 }

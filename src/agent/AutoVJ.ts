@@ -1,30 +1,104 @@
-import { ref, set } from "firebase/database";
+import { ref, set, update, onValue, type Unsubscribe } from "firebase/database";
 import { db } from "../firebase/config";
 import type { AudioFeatures } from "../types/audio";
+import type { NumberParam, SelectParam } from "../types/params";
+import type { BandMapping } from "../types/bands";
+import { SCENE_REGISTRY } from "../scenes/registry";
 import {
   classifyEnergy,
   MOOD_PROFILES,
+  INTENSITY_PARAM_KEYS,
   MIN_SCENE_DURATION,
   MIN_TRANSITION_INTERVAL,
   pickRandom,
   randomInRange,
   type EnergyLevel,
 } from "./AgentPersonality";
+import type { GeminiPhraseGen } from "./GeminiPhraseGen";
+import { pickRandomAnimation } from "../engine/callout-animations";
+import type { EmojiRain } from "../engine/EmojiRain";
 
 type AutoVJState = "idle" | "building" | "dropping" | "chilling" | "shifting";
 
+/** Lookup table: sceneId → registry entry */
+const REGISTRY_MAP = Object.fromEntries(
+  SCENE_REGISTRY.map((s) => [s.id, s]),
+);
+
+interface OverlaySlot {
+  scene: string;
+  blendMode: string;
+  opacity: number;
+}
+
 export class AutoVJ {
-  private enabled = false;
+  private enabled = true;
   private state: AutoVJState = "idle";
   private currentEnergy: EnergyLevel = "low";
   private lastSceneSwitch = 0;
   private lastTransitionChange = 0;
+  private lastParamTweak = 0;
+  private lastOverlayCheck = 0;
   private currentScene = "plasma";
   private frameCount = 0;
 
   // Smoothed energy for trend detection
   private energySmoothed = 0;
   private prevEnergyLevel: EnergyLevel = "low";
+
+  // Multi-layer overlay state (up to 3 overlays)
+  private activeOverlays: (OverlaySlot | null)[] = [null, null, null];
+
+  // Phrase generation
+  private phraseGen: GeminiPhraseGen | null = null;
+  private phrasesEnabled = false;
+  private phraseInterval = 45; // seconds
+  private lastPhraseTime = 0;
+  private calloutActive = false;
+  private calloutUnsub: Unsubscribe | null = null;
+
+  // Emoji rain
+  private emojiRain: EmojiRain | null = null;
+  private lastEmojiPick = 0;
+  private lastBpm = 0;
+
+  setPhraseGen(gen: GeminiPhraseGen): void {
+    this.phraseGen = gen;
+    // Listen to callout active state
+    if (!this.calloutUnsub) {
+      this.calloutUnsub = onValue(ref(db, "ravespace/callouts/active"), (snapshot) => {
+        this.calloutActive = snapshot.exists() && snapshot.val()?.name != null;
+      });
+    }
+  }
+
+  private static readonly EMOJI_BY_ENERGY: Record<EnergyLevel, string[]> = {
+    low: ["✨", "🌙", "🦋", "🌸", "💫", "🪷", "🌌", "💎"],
+    medium: ["💜", "🎵", "🎶", "🩵", "💖", "⭐", "🌟", "🔮"],
+    high: ["🔥", "⚡", "💥", "🪩", "❤️‍🔥", "🎆", "☀️", "🌋"],
+    peak: ["💀", "👾", "🧨", "🎇", "🐉", "🎭", "👽", "🎪"],
+  };
+
+  setEmojiRain(rain: EmojiRain): void {
+    this.emojiRain = rain;
+    this.pickEmojiForRain();
+  }
+
+  private pickEmojiForRain(): void {
+    if (!this.emojiRain) return;
+    const pool = AutoVJ.EMOJI_BY_ENERGY[this.currentEnergy];
+    const emoji = pool[Math.floor(Math.random() * pool.length)]!;
+    this.emojiRain.setEmoji(emoji);
+    this.lastEmojiPick = performance.now() / 1000;
+  }
+
+  setPhrasesEnabled(enabled: boolean): void {
+    this.phrasesEnabled = enabled;
+  }
+
+  setPhraseInterval(seconds: number): void {
+    this.phraseInterval = seconds;
+  }
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
@@ -51,7 +125,9 @@ export class AutoVJ {
     this.energySmoothed = this.energySmoothed * 0.95 + audio.energy * 0.05;
     this.currentEnergy = classifyEnergy(this.energySmoothed);
 
+    this.lastBpm = audio.bpm;
     const nowSec = this.frameCount / 60;
+    const profile = MOOD_PROFILES[this.currentEnergy];
 
     // Detect energy level change
     if (this.currentEnergy !== this.prevEnergyLevel) {
@@ -59,17 +135,35 @@ export class AutoVJ {
       this.prevEnergyLevel = this.currentEnergy;
     }
 
+    // Periodic phrase check (every 60s if nothing else fires)
+    if (nowSec - this.lastPhraseTime > 60) {
+      void this.maybeShowPhrase(nowSec, "periodic");
+    }
+
+    // Periodic param tweaks (every N seconds based on mood profile)
+    if (nowSec - this.lastParamTweak > profile.paramTweakInterval) {
+      this.tweakParams(nowSec);
+    }
+
+    // Periodic emoji refresh (~30s)
+    if (nowSec - this.lastEmojiPick > 30) {
+      this.pickEmojiForRain();
+    }
+
+    // Periodic overlay check (every 8 seconds)
+    if (nowSec - this.lastOverlayCheck > 8) {
+      this.manageOverlayLayers(nowSec);
+    }
+
     // State machine
     switch (this.state) {
       case "idle":
-        // Check if it's time for a scene switch based on energy
         if (nowSec - this.lastSceneSwitch > MIN_SCENE_DURATION) {
           this.considerSceneSwitch(nowSec);
         }
         break;
 
       case "building":
-        // Wait for drop or energy to stabilize
         if (this.currentEnergy === "peak" || this.currentEnergy === "high") {
           this.state = "dropping";
           this.triggerDrop(nowSec);
@@ -80,7 +174,6 @@ export class AutoVJ {
         break;
 
       case "dropping":
-        // After drop, transition to idle
         if (this.frameCount % 120 === 0) {
           this.state = "idle";
         }
@@ -95,7 +188,6 @@ export class AutoVJ {
         break;
 
       case "shifting":
-        // Brief state after energy shift
         this.state = "idle";
         break;
     }
@@ -106,15 +198,18 @@ export class AutoVJ {
     if (!this.enabled) return;
     if (intensity > 0.7 && this.currentEnergy === "peak") {
       this.state = "dropping";
-      // Dramatic transition on big drops
       const profile = MOOD_PROFILES.peak;
       const transition = pickRandom(profile.transitions);
       void set(ref(db, "ravespace/control/transition"), {
         effect: transition,
         duration: 0.5 + intensity,
       });
+
+      // Spike intensity params on drop
+      this.spikeParams();
+
       void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Drop! ${transition} transition`);
+        `Drop! ${transition} + param spike`);
     }
   }
 
@@ -123,20 +218,32 @@ export class AutoVJ {
     if (!this.enabled) return;
     if (intensity > 0.5) {
       this.state = "building";
-      // Increase speed during build
       const speed = 1.0 + intensity * 1.5;
       void set(ref(db, "ravespace/control/globalParams/speedMultiplier"), speed);
+
+      // Gradually raise intensity params during build
+      this.nudgeIntensityParams(0.6 + intensity * 0.4);
+
       void set(ref(db, "ravespace/control/aiMode/lastAction"),
         `Building... speed ${speed.toFixed(1)}x`);
     }
   }
 
+  // ─── Energy Shift ───────────────────────────────────────────
+
   private onEnergyShift(nowSec: number): void {
     this.state = "shifting";
-
     const profile = MOOD_PROFILES[this.currentEnergy];
 
-    // Adjust global params for new energy level
+    // Trigger phrase on energy shift + prefetch for new energy level
+    void this.maybeShowPhrase(nowSec, "energyShift");
+    this.phraseGen?.prefetch(this.currentEnergy, {
+      bpm: this.lastBpm,
+      scene: this.currentScene,
+      vjState: this.state,
+    });
+
+    // Adjust global params
     const intensity = randomInRange(...profile.intensityRange);
     const speed = randomInRange(...profile.speedRange);
     void set(ref(db, "ravespace/control/globalParams"), {
@@ -156,9 +263,20 @@ export class AutoVJ {
       this.lastTransitionChange = nowSec;
     }
 
+    // Adjust effects settings based on energy
+    this.adjustEffects();
+
+    // Reconfigure overlay layers for new energy level
+    this.manageOverlayLayers(nowSec);
+
+    // Pick a fresh emoji for the rain overlay
+    this.pickEmojiForRain();
+
     void set(ref(db, "ravespace/control/aiMode/lastAction"),
       `Energy: ${this.currentEnergy} → intensity ${intensity.toFixed(1)}, speed ${speed.toFixed(1)}`);
   }
+
+  // ─── Scene Switching ────────────────────────────────────────
 
   private considerSceneSwitch(nowSec: number): void {
     const profile = MOOD_PROFILES[this.currentEnergy];
@@ -166,12 +284,7 @@ export class AutoVJ {
     if (candidates.length === 0) return;
 
     const newScene = pickRandom(candidates);
-    this.currentScene = newScene;
-    this.lastSceneSwitch = nowSec;
-
-    void set(ref(db, "ravespace/control/activeScene"), newScene);
-    void set(ref(db, "ravespace/control/aiMode/lastAction"),
-      `Switched to ${newScene}`);
+    this.switchToScene(newScene, nowSec);
   }
 
   private triggerDrop(nowSec: number): void {
@@ -179,11 +292,9 @@ export class AutoVJ {
     const candidates = profile.scenes.filter((s) => s !== this.currentScene);
     if (candidates.length > 0) {
       const newScene = pickRandom(candidates);
-      this.currentScene = newScene;
-      this.lastSceneSwitch = nowSec;
-      void set(ref(db, "ravespace/control/activeScene"), newScene);
+      this.switchToScene(newScene, nowSec);
     }
-
+    void this.maybeShowPhrase(nowSec, "drop");
     void set(ref(db, "ravespace/control/aiMode/lastAction"),
       `DROP → ${this.currentScene}`);
   }
@@ -192,9 +303,7 @@ export class AutoVJ {
     const profile = MOOD_PROFILES.low;
     const newScene = pickRandom(profile.scenes);
     if (newScene !== this.currentScene) {
-      this.currentScene = newScene;
-      this.lastSceneSwitch = nowSec;
-      void set(ref(db, "ravespace/control/activeScene"), newScene);
+      this.switchToScene(newScene, nowSec);
       void set(ref(db, "ravespace/control/transition"), {
         effect: pickRandom(profile.transitions),
         duration: 5,
@@ -203,4 +312,333 @@ export class AutoVJ {
         `Chilling → ${newScene}`);
     }
   }
+
+  /**
+   * Switches to a new scene AND generates a full set of randomized
+   * per-scene params based on the current energy profile.
+   */
+  private switchToScene(sceneId: string, nowSec: number): void {
+    this.currentScene = sceneId;
+    this.lastSceneSwitch = nowSec;
+
+    void set(ref(db, "ravespace/control/activeScene"), sceneId);
+    void this.maybeShowPhrase(nowSec, "sceneSwitch");
+
+    // Generate and push params for this scene
+    const params = this.generateSceneParams(sceneId);
+    if (params) {
+      void set(ref(db, `ravespace/control/sceneParams/${sceneId}`), params);
+    }
+
+    // Generate and push band→param mappings
+    const mappings = this.generateBandMappings(sceneId);
+    if (mappings.length > 0) {
+      void set(ref(db, "ravespace/control/bandMappings"), mappings);
+    }
+  }
+
+  // ─── Per-scene Param Generation ─────────────────────────────
+
+  /**
+   * Generates randomized params for a scene, biased by current energy level.
+   */
+  private generateSceneParams(sceneId: string): Record<string, number | boolean | string> | null {
+    const meta = REGISTRY_MAP[sceneId];
+    if (!meta) return null;
+
+    const profile = MOOD_PROFILES[this.currentEnergy];
+    const bias = profile.paramEnergyBias;
+    const params: Record<string, number | boolean | string> = {};
+
+    for (const desc of meta.params) {
+      switch (desc.type) {
+        case "number": {
+          const np = desc as NumberParam;
+          const isIntensityParam = INTENSITY_PARAM_KEYS.test(np.key);
+          if (isIntensityParam) {
+            const base = randomInRange(np.min, np.max);
+            params[np.key] = np.min + (np.max - np.min) * (base / np.max * (1 - bias) + bias);
+          } else {
+            params[np.key] = randomInRange(np.min, np.max);
+          }
+          params[np.key] = Math.round((params[np.key] as number) / np.step) * np.step;
+          break;
+        }
+        case "select": {
+          const sp = desc as SelectParam;
+          params[sp.key] = pickRandom(sp.options);
+          break;
+        }
+        case "boolean": {
+          params[desc.key] = Math.random() < 0.5 + bias * 0.5;
+          break;
+        }
+        case "color": {
+          const hue = Math.floor(Math.random() * 360);
+          params[desc.key] = hslToHex(hue, 100, 50);
+          break;
+        }
+      }
+    }
+
+    return params;
+  }
+
+  /**
+   * Generate random band→param mappings for a scene.
+   * Picks 1-3 number params, assigns random bands, amounts, and modes.
+   */
+  private generateBandMappings(sceneId: string): BandMapping[] {
+    const meta = REGISTRY_MAP[sceneId];
+    if (!meta) return [];
+
+    const numberParams = meta.params.filter(
+      (p): p is NumberParam => p.type === "number",
+    );
+    if (numberParams.length === 0) return [];
+
+    const count = Math.min(
+      numberParams.length,
+      1 + Math.floor(Math.random() * 3),
+    );
+
+    const shuffled = [...numberParams].sort(() => Math.random() - 0.5);
+    const selected = shuffled.slice(0, count);
+
+    const mappings: BandMapping[] = [];
+    for (const param of selected) {
+      const isIntensity = INTENSITY_PARAM_KEYS.test(param.key);
+      const bandIndex = isIntensity
+        ? Math.floor(Math.random() * 4) // bands 0-3 (sub-bass to bass)
+        : 4 + Math.floor(Math.random() * 11); // bands 4-14
+
+      mappings.push({
+        paramKey: param.key,
+        bandIndex,
+        amount: 0.2 + Math.random() * 0.6,
+        mode: Math.random() < 0.6 ? "add" : "multiply",
+      });
+    }
+
+    return mappings;
+  }
+
+  // ─── Periodic Param Tweaking ────────────────────────────────
+
+  private tweakParams(nowSec: number): void {
+    this.lastParamTweak = nowSec;
+
+    const meta = REGISTRY_MAP[this.currentScene];
+    if (!meta) return;
+
+    const numberParams = meta.params.filter((p) => p.type === "number") as NumberParam[];
+    if (numberParams.length === 0) return;
+
+    const tweakCount = Math.min(1 + Math.floor(Math.random() * 2), numberParams.length);
+    const shuffled = [...numberParams].sort(() => Math.random() - 0.5);
+    const toTweak = shuffled.slice(0, tweakCount);
+
+    const profile = MOOD_PROFILES[this.currentEnergy];
+    const updates: Record<string, number> = {};
+
+    for (const np of toTweak) {
+      const range = np.max - np.min;
+      const drift = (Math.random() - 0.5) * range * 0.2;
+      const isIntensity = INTENSITY_PARAM_KEYS.test(np.key);
+      const biasedDrift = isIntensity ? drift + range * profile.paramEnergyBias * 0.1 : drift;
+
+      const defaultVal = np.default;
+      const newVal = Math.max(np.min, Math.min(np.max, defaultVal + biasedDrift));
+      updates[np.key] = Math.round(newVal / np.step) * np.step;
+    }
+
+    void update(ref(db, `ravespace/control/sceneParams/${this.currentScene}`), updates);
+
+    const paramNames = toTweak.map((p) => p.key).join(", ");
+    void set(ref(db, "ravespace/control/aiMode/lastAction"),
+      `Tweaked ${paramNames}`);
+  }
+
+  // ─── Spike Params on Drop ───────────────────────────────────
+
+  private spikeParams(): void {
+    const meta = REGISTRY_MAP[this.currentScene];
+    if (!meta) return;
+
+    const updates: Record<string, number> = {};
+    for (const desc of meta.params) {
+      if (desc.type === "number") {
+        const np = desc as NumberParam;
+        if (INTENSITY_PARAM_KEYS.test(np.key)) {
+          updates[np.key] = Math.round(randomInRange(np.max * 0.8, np.max) / np.step) * np.step;
+        }
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      void update(ref(db, `ravespace/control/sceneParams/${this.currentScene}`), updates);
+    }
+  }
+
+  private nudgeIntensityParams(factor: number): void {
+    const meta = REGISTRY_MAP[this.currentScene];
+    if (!meta) return;
+
+    const updates: Record<string, number> = {};
+    for (const desc of meta.params) {
+      if (desc.type === "number") {
+        const np = desc as NumberParam;
+        if (INTENSITY_PARAM_KEYS.test(np.key)) {
+          const target = np.min + (np.max - np.min) * factor;
+          updates[np.key] = Math.round(target / np.step) * np.step;
+        }
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      void update(ref(db, `ravespace/control/sceneParams/${this.currentScene}`), updates);
+    }
+  }
+
+  // ─── Phrase Generation ──────────────────────────────────────
+
+  private async maybeShowPhrase(nowSec: number, _reason: string): Promise<void> {
+    if (!this.phrasesEnabled || !this.phraseGen) return;
+    if (nowSec - this.lastPhraseTime < this.phraseInterval) return;
+    if (this.calloutActive) return;
+
+    try {
+      const { get: fbGet } = await import("firebase/database");
+      const queueSnap = await fbGet(ref(db, "ravespace/callouts/queue"));
+      if (queueSnap.exists() && Object.keys(queueSnap.val()).length > 3) return;
+    } catch {
+      // Can't check queue — proceed anyway
+    }
+
+    this.lastPhraseTime = nowSec;
+
+    try {
+      const phrase = await this.phraseGen.getPhrase(this.currentEnergy, {
+        bpm: this.lastBpm,
+        scene: this.currentScene,
+        vjState: this.state,
+      });
+
+      void set(ref(db, "ravespace/callouts/active"), {
+        name: phrase,
+        startTime: Date.now(),
+        duration: 4,
+        source: "ai" as const,
+        animationStyle: pickRandomAnimation(),
+      });
+
+      void set(ref(db, "ravespace/control/aiMode/lastAction"),
+        `Phrase: "${phrase}"`);
+    } catch {
+      // Phrase generation failed — skip silently
+    }
+  }
+
+  dispose(): void {
+    this.calloutUnsub?.();
+  }
+
+  // ─── Multi-Layer Overlay Management ────────────────────────
+
+  /**
+   * Manages up to 3 overlay layers based on current energy level.
+   * Higher energy = more layers, more aggressive blending.
+   */
+  private manageOverlayLayers(nowSec: number): void {
+    this.lastOverlayCheck = nowSec;
+
+    const profile = MOOD_PROFILES[this.currentEnergy];
+    const maxLayers = profile.maxOverlayLayers;
+
+    // Determine how many overlay layers to have active
+    let targetLayerCount = 0;
+    for (let i = 0; i < maxLayers; i++) {
+      // Each additional layer is less likely
+      const chance = profile.overlayChance * Math.pow(0.6, i);
+      if (Math.random() < chance) {
+        targetLayerCount = i + 1;
+      } else {
+        break;
+      }
+    }
+
+    // Build the overlays array
+    const overlays: (OverlaySlot | null)[] = [null, null, null];
+    const usedScenes = new Set<string>([this.currentScene]);
+
+    for (let i = 0; i < targetLayerCount; i++) {
+      const candidates = profile.scenes.filter((s) => !usedScenes.has(s));
+      if (candidates.length === 0) break;
+
+      const overlayScene = pickRandom(candidates);
+      usedScenes.add(overlayScene);
+
+      const blendMode = pickRandom(profile.overlayBlendModes);
+      // Decrease opacity for each successive layer
+      const baseOpacity = randomInRange(...profile.overlayOpacityRange);
+      const opacity = baseOpacity * Math.pow(0.7, i);
+
+      overlays[i] = {
+        scene: overlayScene,
+        blendMode,
+        opacity: Math.round(opacity * 100) / 100,
+      };
+    }
+
+    // Push to Firebase
+    const overlayData = overlays.map((slot) =>
+      slot
+        ? { scene: slot.scene, blendMode: slot.blendMode, opacity: slot.opacity }
+        : { scene: "" },
+    );
+    void set(ref(db, "ravespace/control/overlays"), overlayData);
+
+    this.activeOverlays = overlays;
+
+    const activeNames = overlays
+      .filter((o) => o !== null)
+      .map((o) => `${o!.scene}(${o!.blendMode}@${(o!.opacity * 100).toFixed(0)}%)`);
+
+    if (activeNames.length > 0) {
+      void set(ref(db, "ravespace/control/aiMode/lastAction"),
+        `Layers: ${activeNames.join(" + ")}`);
+    }
+  }
+
+  // ─── Effects Settings ───────────────────────────────────────
+
+  private adjustEffects(): void {
+    const profile = MOOD_PROFILES[this.currentEnergy];
+    const sensitivity = randomInRange(...profile.effectsSensitivityRange);
+
+    const isHighEnergy = this.currentEnergy === "high" || this.currentEnergy === "peak";
+    const isMedium = this.currentEnergy === "medium";
+
+    void set(ref(db, "ravespace/control/effects"), {
+      dropFlash: isMedium || isHighEnergy,
+      dropZoom: isHighEnergy,
+      screenShake: isHighEnergy,
+      sensitivity: Math.round(sensitivity * 100) / 100,
+      strobeBpmSync: this.currentEnergy === "peak",
+    });
+  }
+}
+
+// ─── Utility ──────────────────────────────────────────────────
+
+function hslToHex(h: number, s: number, l: number): string {
+  s /= 100;
+  l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    return Math.round(255 * color).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
 }

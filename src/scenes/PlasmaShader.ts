@@ -21,6 +21,9 @@ interface PlasmaUniforms extends Record<string, IUniform> {
   uBass: IUniform<number>;
   uMid: IUniform<number>;
   uTreble: IUniform<number>;
+  uKick: IUniform<number>;
+  uBeatIntensity: IUniform<number>;
+  uSpectralFlux: IUniform<number>;
   uResolution: IUniform<Vector2>;
   uSpeed: IUniform<number>;
   uTunnelIntensity: IUniform<number>;
@@ -48,6 +51,9 @@ export class PlasmaShader implements ParameterizedScene {
       uBass: { value: 0 },
       uMid: { value: 0 },
       uTreble: { value: 0 },
+      uKick: { value: 0 },
+      uBeatIntensity: { value: 0 },
+      uSpectralFlux: { value: 0 },
       uResolution: { value: new Vector2(1, 1) },
       uSpeed: { value: 1.0 },
       uTunnelIntensity: { value: 1.0 },
@@ -76,6 +82,9 @@ export class PlasmaShader implements ParameterizedScene {
     this.uniforms.uBass.value = audio.bass;
     this.uniforms.uMid.value = audio.mid;
     this.uniforms.uTreble.value = audio.treble;
+    this.uniforms.uKick.value = audio.kick;
+    this.uniforms.uBeatIntensity.value = audio.beatIntensity;
+    this.uniforms.uSpectralFlux.value = audio.spectralFlux;
     this.renderer!.render(this.threeScene, this.camera);
   }
 
