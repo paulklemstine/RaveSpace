@@ -13,9 +13,18 @@ import type { AudioFeatures } from "../types/audio";
 import type { ParamDescriptor, ParamValues } from "../types/params";
 import { SCENE_REGISTRY } from "./registry";
 import vertexShader from "../shaders/fullscreen.vert";
-import fragmentShader from "../shaders/plasma.frag";
+import fragmentShader from "../shaders/tunnel.frag";
 
-interface PlasmaUniforms extends Record<string, IUniform> {
+const COLOR_SCHEME_MAP: Record<string, number> = {
+  fire: 0,
+  ice: 1,
+  toxic: 2,
+  rainbow: 3,
+};
+
+const COLOR_SCHEME_REVERSE = ["fire", "ice", "toxic", "rainbow"];
+
+interface TunnelUniforms extends Record<string, IUniform> {
   uTime: IUniform<number>;
   uEnergy: IUniform<number>;
   uBass: IUniform<number>;
@@ -23,21 +32,22 @@ interface PlasmaUniforms extends Record<string, IUniform> {
   uTreble: IUniform<number>;
   uResolution: IUniform<Vector2>;
   uSpeed: IUniform<number>;
-  uTunnelIntensity: IUniform<number>;
-  uColorShift: IUniform<number>;
+  uRadius: IUniform<number>;
+  uTwist: IUniform<number>;
+  uGlowIntensity: IUniform<number>;
   uAudioReactivity: IUniform<number>;
-  uVignette: IUniform<number>;
+  uColorScheme: IUniform<number>;
 }
 
-const METADATA = SCENE_REGISTRY.find((s) => s.id === "plasma")!;
+const METADATA = SCENE_REGISTRY.find((s) => s.id === "tunnel")!;
 
-export class PlasmaShader implements ParameterizedScene {
+export class TunnelScene implements ParameterizedScene {
   readonly params: readonly ParamDescriptor[] = METADATA.params;
 
   private camera = new OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private threeScene = new ThreeScene();
   private material: ShaderMaterial;
-  private uniforms: PlasmaUniforms;
+  private uniforms: TunnelUniforms;
   private mesh: Mesh;
   private renderer: WebGLRenderer | null = null;
 
@@ -50,10 +60,11 @@ export class PlasmaShader implements ParameterizedScene {
       uTreble: { value: 0 },
       uResolution: { value: new Vector2(1, 1) },
       uSpeed: { value: 1.0 },
-      uTunnelIntensity: { value: 1.0 },
-      uColorShift: { value: 0.0 },
+      uRadius: { value: 0.8 },
+      uTwist: { value: 1.0 },
+      uGlowIntensity: { value: 1.0 },
       uAudioReactivity: { value: 1.0 },
-      uVignette: { value: 1.0 },
+      uColorScheme: { value: 0 },
     };
 
     this.material = new ShaderMaterial({
@@ -90,19 +101,23 @@ export class PlasmaShader implements ParameterizedScene {
 
   setParams(values: ParamValues): void {
     if (values.speed !== undefined) this.uniforms.uSpeed.value = values.speed as number;
-    if (values.tunnelIntensity !== undefined) this.uniforms.uTunnelIntensity.value = values.tunnelIntensity as number;
-    if (values.colorShift !== undefined) this.uniforms.uColorShift.value = values.colorShift as number;
+    if (values.radius !== undefined) this.uniforms.uRadius.value = values.radius as number;
+    if (values.twist !== undefined) this.uniforms.uTwist.value = values.twist as number;
+    if (values.glowIntensity !== undefined) this.uniforms.uGlowIntensity.value = values.glowIntensity as number;
     if (values.audioReactivity !== undefined) this.uniforms.uAudioReactivity.value = values.audioReactivity as number;
-    if (values.vignette !== undefined) this.uniforms.uVignette.value = (values.vignette as boolean) ? 1.0 : 0.0;
+    if (values.colorScheme !== undefined) {
+      this.uniforms.uColorScheme.value = COLOR_SCHEME_MAP[values.colorScheme as string] ?? 0;
+    }
   }
 
   getParams(): ParamValues {
     return {
       speed: this.uniforms.uSpeed.value,
-      tunnelIntensity: this.uniforms.uTunnelIntensity.value,
-      colorShift: this.uniforms.uColorShift.value,
+      radius: this.uniforms.uRadius.value,
+      twist: this.uniforms.uTwist.value,
+      glowIntensity: this.uniforms.uGlowIntensity.value,
       audioReactivity: this.uniforms.uAudioReactivity.value,
-      vignette: this.uniforms.uVignette.value > 0.5,
+      colorScheme: COLOR_SCHEME_REVERSE[this.uniforms.uColorScheme.value] ?? "fire",
     };
   }
 }

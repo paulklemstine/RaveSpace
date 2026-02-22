@@ -1,0 +1,64 @@
+import { ref, onValue, type Unsubscribe } from "firebase/database";
+import { db } from "./config";
+import type { Renderer, GlobalParams } from "../engine/Renderer";
+import type { SceneManager } from "../engine/SceneManager";
+import type { ParamValues } from "../types/params";
+
+export class ControlListener {
+  private renderer: Renderer;
+  private sceneManager: SceneManager;
+  private unsubscribers: Unsubscribe[] = [];
+
+  constructor(renderer: Renderer, sceneManager: SceneManager) {
+    this.renderer = renderer;
+    this.sceneManager = sceneManager;
+  }
+
+  start(): void {
+    // Listen for active scene changes
+    const sceneRef = ref(db, "ravespace/control/activeScene");
+    this.unsubscribers.push(
+      onValue(sceneRef, (snapshot) => {
+        const sceneName = snapshot.val() as string | null;
+        if (sceneName && sceneName !== this.renderer.getActiveSceneName()) {
+          try {
+            this.renderer.setSceneByName(sceneName, this.sceneManager);
+          } catch (e) {
+            console.warn("Failed to switch scene:", e);
+          }
+        }
+      }),
+    );
+
+    // Listen for global param changes
+    const globalRef = ref(db, "ravespace/control/globalParams");
+    this.unsubscribers.push(
+      onValue(globalRef, (snapshot) => {
+        const params = snapshot.val() as Partial<GlobalParams> | null;
+        if (params) {
+          this.renderer.setGlobalParams(params);
+        }
+      }),
+    );
+
+    // Listen for per-scene param changes for each registered scene
+    for (const name of this.sceneManager.list()) {
+      const paramRef = ref(db, `ravespace/control/sceneParams/${name}`);
+      this.unsubscribers.push(
+        onValue(paramRef, (snapshot) => {
+          const values = snapshot.val() as ParamValues | null;
+          if (values && name === this.renderer.getActiveSceneName()) {
+            this.renderer.setSceneParams(values);
+          }
+        }),
+      );
+    }
+  }
+
+  stop(): void {
+    for (const unsub of this.unsubscribers) {
+      unsub();
+    }
+    this.unsubscribers = [];
+  }
+}

@@ -5,6 +5,10 @@
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "rewrites": [
       {
+        "source": "/control",
+        "destination": "/control.html"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
@@ -12,6 +16,15 @@
     "headers": [
       {
         "source": "/index.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "/control.html",
         "headers": [
           {
             "key": "Cache-Control",

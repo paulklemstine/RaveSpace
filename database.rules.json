@@ -39,6 +39,14 @@
       },
       "params": {
         ".write": "auth != null"
+      },
+      "control": {
+        ".write": true,
+        ".read": true
+      },
+      "telemetry": {
+        ".write": true,
+        ".read": true
       }
     }
   }

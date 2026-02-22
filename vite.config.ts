@@ -14,6 +14,14 @@ export default defineConfig({
       ),
     },
   },
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        control: path.resolve(__dirname, "control.html"),
+      },
+    },
+  },
   server: {
     watch: {
       usePolling: true,

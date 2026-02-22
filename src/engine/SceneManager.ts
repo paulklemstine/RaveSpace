@@ -1,23 +1,43 @@
 import type { Scene } from "../types/scene";
+import type { SceneMetadata } from "../scenes/registry";
 
 type SceneFactory = () => Scene;
 
-export class SceneManager {
-  private factories = new Map<string, SceneFactory>();
+interface SceneEntry {
+  metadata: SceneMetadata;
+  factory: SceneFactory;
+}
 
-  register(name: string, factory: SceneFactory): void {
-    this.factories.set(name, factory);
+export class SceneManager {
+  private entries = new Map<string, SceneEntry>();
+  private activeSceneName: string | null = null;
+
+  register(metadata: SceneMetadata, factory: SceneFactory): void {
+    this.entries.set(metadata.id, { metadata, factory });
   }
 
   create(name: string): Scene {
-    const factory = this.factories.get(name);
-    if (!factory) {
+    const entry = this.entries.get(name);
+    if (!entry) {
       throw new Error(`Scene not found: ${name}`);
     }
-    return factory();
+    this.activeSceneName = name;
+    return entry.factory();
+  }
+
+  getMetadata(name: string): SceneMetadata | undefined {
+    return this.entries.get(name)?.metadata;
+  }
+
+  listMetadata(): SceneMetadata[] {
+    return Array.from(this.entries.values()).map((e) => e.metadata);
+  }
+
+  getActiveSceneName(): string | null {
+    return this.activeSceneName;
   }
 
   list(): string[] {
-    return Array.from(this.factories.keys());
+    return Array.from(this.entries.keys());
   }
 }

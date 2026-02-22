@@ -1,0 +1,183 @@
+import { ref, set, onValue, type Unsubscribe } from "firebase/database";
+import { db } from "../firebase/config";
+import { SCENE_REGISTRY } from "../scenes/registry";
+import type { ParamValues } from "../types/params";
+import { ConnectionStatus } from "./components/ConnectionStatus";
+import { ScenePicker } from "./components/ScenePicker";
+import { AudioMeters } from "./components/AudioMeters";
+import { BpmDisplay } from "./components/BpmDisplay";
+import { ParamSliders } from "./components/ParamSliders";
+import { GlobalControls } from "./components/GlobalControls";
+
+export class ControlPanel {
+  private root: HTMLElement;
+  private unsubscribers: Unsubscribe[] = [];
+  private connectionStatus!: ConnectionStatus;
+  private scenePicker!: ScenePicker;
+  private audioMeters!: AudioMeters;
+  private bpmDisplay!: BpmDisplay;
+  private paramSliders!: ParamSliders;
+  private globalControls!: GlobalControls;
+  private activeScene = "plasma";
+
+  constructor(root: HTMLElement) {
+    this.root = root;
+  }
+
+  init(): void {
+    this.buildLayout();
+    this.wireListeners();
+  }
+
+  private buildLayout(): void {
+    this.root.className = "max-w-5xl mx-auto p-4";
+
+    // Header
+    const header = document.createElement("div");
+    header.className = "flex items-center justify-between mb-6";
+
+    const title = document.createElement("h1");
+    title.textContent = "RAVESPACE VJ CONTROL";
+    title.className = "text-xl font-bold tracking-widest text-white";
+
+    this.connectionStatus = new ConnectionStatus(header);
+    header.prepend(title);
+    this.root.appendChild(header);
+
+    // Main grid: sidebar (scenes + audio) | content (global + params)
+    const grid = document.createElement("div");
+    grid.className = "grid grid-cols-[220px_1fr] gap-6";
+
+    // Left sidebar
+    const sidebar = document.createElement("div");
+    sidebar.className = "space-y-6";
+
+    this.scenePicker = new ScenePicker(sidebar, SCENE_REGISTRY, (sceneId) => {
+      void set(ref(db, "ravespace/control/activeScene"), sceneId);
+    });
+
+    this.audioMeters = new AudioMeters(sidebar);
+    this.bpmDisplay = new BpmDisplay(sidebar);
+
+    grid.appendChild(sidebar);
+
+    // Right content
+    const content = document.createElement("div");
+    content.className = "space-y-6";
+
+    this.globalControls = new GlobalControls(content, (values) => {
+      void set(ref(db, "ravespace/control/globalParams"), values);
+    });
+
+    const paramContainer = document.createElement("div");
+    paramContainer.className = "border-t border-gray-800 pt-6";
+    this.paramSliders = new ParamSliders(
+      paramContainer,
+      (values) => {
+        void set(ref(db, `ravespace/control/sceneParams/${this.activeScene}`), values);
+      },
+      () => {
+        // Reset: build default values and write
+        const meta = SCENE_REGISTRY.find((s) => s.id === this.activeScene);
+        if (!meta) return;
+        const defaults: ParamValues = {};
+        for (const p of meta.params) {
+          defaults[p.key] = p.default;
+        }
+        void set(ref(db, `ravespace/control/sceneParams/${this.activeScene}`), defaults);
+      },
+    );
+    content.appendChild(paramContainer);
+
+    grid.appendChild(content);
+    this.root.appendChild(grid);
+
+    // Set initial scene in sliders
+    const initialMeta = SCENE_REGISTRY.find((s) => s.id === this.activeScene);
+    if (initialMeta) {
+      this.paramSliders.setScene(initialMeta.displayName, initialMeta.params);
+    }
+  }
+
+  private wireListeners(): void {
+    // Listen to telemetry/audio
+    const audioRef = ref(db, "ravespace/telemetry/audio");
+    this.unsubscribers.push(
+      onValue(audioRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          this.audioMeters.update({
+            bass: data.bass ?? 0,
+            mid: data.mid ?? 0,
+            treble: data.treble ?? 0,
+            energy: data.energy ?? 0,
+          });
+          this.bpmDisplay.update(data.bpm ?? 0, data.beat ?? false);
+        }
+      }),
+    );
+
+    // Listen to telemetry/display for connection status
+    const displayRef = ref(db, "ravespace/telemetry/display");
+    this.unsubscribers.push(
+      onValue(displayRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          const stale = Date.now() - (data.timestamp ?? 0) > 5000;
+          this.connectionStatus.update(data.connected === true && !stale);
+        } else {
+          this.connectionStatus.update(false);
+        }
+      }),
+    );
+
+    // Listen to control/activeScene to keep UI in sync
+    const sceneRef = ref(db, "ravespace/control/activeScene");
+    this.unsubscribers.push(
+      onValue(sceneRef, (snapshot) => {
+        const sceneName = snapshot.val() as string | null;
+        if (sceneName && sceneName !== this.activeScene) {
+          this.activeScene = sceneName;
+          this.scenePicker.update(sceneName);
+
+          const meta = SCENE_REGISTRY.find((s) => s.id === sceneName);
+          if (meta) {
+            this.paramSliders.setScene(meta.displayName, meta.params);
+          }
+        }
+      }),
+    );
+
+    // Listen to control/globalParams to keep UI in sync
+    const globalRef = ref(db, "ravespace/control/globalParams");
+    this.unsubscribers.push(
+      onValue(globalRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          this.globalControls.update(data);
+        }
+      }),
+    );
+
+    // Listen to control/sceneParams for each scene
+    for (const scene of SCENE_REGISTRY) {
+      const paramRef = ref(db, `ravespace/control/sceneParams/${scene.id}`);
+      this.unsubscribers.push(
+        onValue(paramRef, (snapshot) => {
+          const values = snapshot.val() as ParamValues | null;
+          if (values && scene.id === this.activeScene) {
+            this.paramSliders.updateValues(values);
+          }
+        }),
+      );
+    }
+  }
+
+  dispose(): void {
+    for (const unsub of this.unsubscribers) {
+      unsub();
+    }
+    this.unsubscribers = [];
+    this.root.innerHTML = "";
+  }
+}
