@@ -105,7 +105,14 @@ export class AudioAnalyzer {
   private rollingAvg = 0;
 
   async start(): Promise<void> {
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      console.warn("[AudioAnalyzer] Mic unavailable — running silent:", e);
+      // Create a silent audio context so the rest of the pipeline works
+      this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
+      return;
+    }
     this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
     this.source = this.ctx.createMediaStreamSource(this.stream);
 

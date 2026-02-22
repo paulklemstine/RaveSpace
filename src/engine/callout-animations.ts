@@ -65,7 +65,9 @@ function rainbowHue(t: number, offset: number): string {
 }
 
 function rainbowBgPos(t: number, charIdx: number): string {
-  return `${(t * 40 + charIdx * 15) % 500}% 0`;
+  const x = (t * 30 + charIdx * 20) % 600;
+  const y = (t * 15 + charIdx * 10) % 600;
+  return `${x}% ${y}%`;
 }
 
 function applyTransform(

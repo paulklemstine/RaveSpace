@@ -85,13 +85,23 @@ export class CalloutPanel {
     queueTitle.className = "text-xs text-gray-500";
     queueTitle.textContent = "AUDIENCE QUEUE";
 
+    const queueBtns = document.createElement("div");
+    queueBtns.className = "flex gap-2";
+
     const nextBtn = document.createElement("button");
     nextBtn.textContent = "Show Next";
     nextBtn.className =
       "text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 transition-colors cursor-pointer";
     nextBtn.addEventListener("click", () => this.showNext());
 
-    queueHeader.append(queueTitle, nextBtn);
+    const clearBtn = document.createElement("button");
+    clearBtn.textContent = "Clear All";
+    clearBtn.className =
+      "text-xs px-2 py-1 rounded bg-red-900/50 hover:bg-red-800/50 text-red-400 transition-colors cursor-pointer";
+    clearBtn.addEventListener("click", () => this.clearQueue());
+
+    queueBtns.append(nextBtn, clearBtn);
+    queueHeader.append(queueTitle, queueBtns);
     section.appendChild(queueHeader);
 
     this.queueListEl = document.createElement("div");
@@ -216,7 +226,12 @@ export class CalloutPanel {
       const row = document.createElement("div");
       row.className = "flex items-center justify-between px-2 py-1 bg-gray-800/50 rounded";
       const nameSpan = document.createElement("span");
+      nameSpan.className = "truncate flex-1";
       nameSpan.textContent = item.name;
+
+      const btnGroup = document.createElement("div");
+      btnGroup.className = "flex gap-2 ml-2 shrink-0";
+
       const showBtn = document.createElement("button");
       showBtn.textContent = "Show";
       showBtn.className = "text-xs text-purple-400 hover:text-purple-300 cursor-pointer";
@@ -224,7 +239,17 @@ export class CalloutPanel {
         this.showCallout(item.name);
         this.removeFromQueue(item.key);
       });
-      row.append(nameSpan, showBtn);
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.textContent = "\u2715";
+      deleteBtn.className = "text-xs text-red-500 hover:text-red-400 cursor-pointer";
+      deleteBtn.title = "Delete";
+      deleteBtn.addEventListener("click", () => {
+        this.removeFromQueue(item.key);
+      });
+
+      btnGroup.append(showBtn, deleteBtn);
+      row.append(nameSpan, btnGroup);
       this.queueListEl.appendChild(row);
     }
   }
@@ -255,6 +280,12 @@ export class CalloutPanel {
   private removeFromQueue(key: string): void {
     void remove(ref(db, `ravespace/callouts/queue/${key}`));
     this.queue = this.queue.filter((item) => item.key !== key);
+    this.renderQueue();
+  }
+
+  private clearQueue(): void {
+    void remove(ref(db, "ravespace/callouts/queue"));
+    this.queue = [];
     this.renderQueue();
   }
 

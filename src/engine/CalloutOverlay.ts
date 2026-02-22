@@ -22,6 +22,12 @@ const HOLD_DURATION = 5;
 
 /**
  * Psychedelic animated text overlay for audience shoutouts, VJ callouts, and AI phrases.
+ *
+ * Text rendering uses a two-layer masking approach:
+ *   1. **Glow layer** — blurred, brightly colored duplicate for neon bloom
+ *   2. **Main text** — animated gradient masked through letter shapes via background-clip
+ *      plus mix-blend-mode so the text interacts with the scene underneath
+ *
  * Keeps all audience submissions and cycles through them endlessly with random animations.
  */
 export class CalloutOverlay {
@@ -59,9 +65,10 @@ export class CalloutOverlay {
       justify-content: center;
       pointer-events: none;
       z-index: 200;
+      mix-blend-mode: screen;
     `;
 
-    // Glow layer (behind text, blurred duplicate for neon glow)
+    // Glow layer (behind text, blurred duplicate for neon bloom)
     this.glowLayer = document.createElement("div");
     this.glowLayer.style.cssText = `
       position: absolute;
@@ -69,17 +76,17 @@ export class CalloutOverlay {
       gap: 0.02em;
       align-items: center;
       justify-content: center;
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: 'Impact', 'Arial Black', system-ui, sans-serif;
       font-size: clamp(3rem, 8vw, 8rem);
       font-weight: 900;
       letter-spacing: 0.05em;
       text-transform: uppercase;
-      filter: blur(12px);
+      filter: blur(18px) brightness(1.5);
       opacity: 0;
     `;
     this.el.appendChild(this.glowLayer);
 
-    // Main text container
+    // Main text container — gradient masked through letter shapes
     this.textContainer = document.createElement("div");
     this.textContainer.style.cssText = `
       position: relative;
@@ -87,7 +94,7 @@ export class CalloutOverlay {
       gap: 0.02em;
       align-items: center;
       justify-content: center;
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: 'Impact', 'Arial Black', system-ui, sans-serif;
       font-size: clamp(3rem, 8vw, 8rem);
       font-weight: 900;
       letter-spacing: 0.05em;
@@ -171,29 +178,36 @@ export class CalloutOverlay {
     for (const char of name) {
       const ch = char === " " ? "\u00A0" : char;
 
-      // Main character span
+      // Main character span — animated gradient masked to letter shape
       const span = document.createElement("span");
       span.textContent = ch;
       span.style.cssText = `
         display: inline-block;
-        color: transparent;
-        background: linear-gradient(90deg, #ff00ff, #00ffff, #ffff00, #ff6600, #ff00ff);
-        background-size: 500% 100%;
+        background: linear-gradient(
+          135deg,
+          #ff00ff, #ff0066, #ff6600, #ffff00,
+          #00ff66, #00ffff, #0066ff, #9900ff, #ff00ff
+        );
+        background-size: 600% 600%;
         -webkit-background-clip: text;
         background-clip: text;
         -webkit-text-fill-color: transparent;
-        text-shadow: none;
-        filter: drop-shadow(0 0 8px currentColor);
+        -webkit-text-stroke: 1px rgba(255, 255, 255, 0.15);
+        paint-order: stroke fill;
       `;
       this.textContainer.appendChild(span);
       this.charSpans.push(span);
 
-      // Glow duplicate
+      // Glow duplicate — solid vibrant color, blurred by parent
       const glow = document.createElement("span");
       glow.textContent = ch;
       glow.style.cssText = `
         display: inline-block;
         color: #ff00ff;
+        text-shadow:
+          0 0 10px currentColor,
+          0 0 30px currentColor,
+          0 0 60px currentColor;
       `;
       this.glowLayer.appendChild(glow);
       this.glowSpans.push(glow);
@@ -205,7 +219,7 @@ export class CalloutOverlay {
     this.stateStartTime = performance.now();
 
     this.textContainer.style.opacity = "1";
-    this.glowLayer.style.opacity = "0.7";
+    this.glowLayer.style.opacity = "0.8";
 
     this.animate();
   }
