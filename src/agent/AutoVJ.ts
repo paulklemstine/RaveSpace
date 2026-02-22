@@ -32,7 +32,7 @@ interface OverlaySlot {
 }
 
 export class AutoVJ {
-  private enabled = false;
+  private enabled = true;
   private state: AutoVJState = "idle";
   private currentEnergy: EnergyLevel = "low";
   private lastSceneSwitch = 0;
