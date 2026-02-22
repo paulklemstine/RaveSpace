@@ -21,6 +21,7 @@ interface ColorEntry {
 
 interface ReactionEntry {
   emoji: string;
+  size?: number;
   ts: number;
 }
 
@@ -88,7 +89,7 @@ export class CrowdOverlay {
     const reactUnsub = onChildAdded(reactionsRef, (snap) => {
       const data = snap.val() as ReactionEntry | null;
       if (data?.emoji) {
-        this.spawnEmoji(data.emoji);
+        this.spawnEmoji(data.emoji, data.size ?? 1);
       }
     });
     this.unsubscribers.push(reactUnsub);
@@ -171,7 +172,7 @@ export class CrowdOverlay {
     return this.connectedCount;
   }
 
-  private spawnEmoji(emoji: string): void {
+  private spawnEmoji(emoji: string, size: number = 1): void {
     if (this.flying.length >= MAX_FLYING) {
       // Remove oldest
       const oldest = this.flying.shift()!;
@@ -220,7 +221,7 @@ export class CrowdOverlay {
       vx,
       vy,
       opacity: 1,
-      scale: 0.5 + Math.random() * 0.8,
+      scale: (0.5 + Math.random() * 0.8) * size,
       rotation: Math.random() * 360,
       rotSpeed: (Math.random() - 0.5) * 180,
       age: 0,

@@ -13,6 +13,29 @@ const DEVICE_ID = getOrCreateDeviceId();
 
 const EMOJIS = ["🔥", "⚡", "💀", "👽", "❤️‍🔥", "✨", "💥", "🎵"] as const;
 
+// ─── Audio Telemetry ─────────────────────────────────────────
+
+interface AudioTelemetry {
+  energy: number;
+  bass: number;
+  mid: number;
+  treble: number;
+  beat: boolean;
+  bpm: number;
+  kick: number;
+  beatIntensity: number;
+  timestamp: number;
+}
+
+let audioTelemetry: AudioTelemetry | null = null;
+let lastBeatState = false;
+
+// Emoji combo tracking
+let comboEmoji = "";
+let comboCount = 0;
+let comboTimer: ReturnType<typeof setTimeout> | null = null;
+const COMBO_WINDOW_MS = 1500;
+
 const NEON_COLORS = [
   { label: "Pink", hex: "#ff00ff", hue: 300 },
   { label: "Cyan", hex: "#00ffff", hue: 180 },
@@ -143,6 +166,30 @@ function injectStyles(): void {
       background-size: 200% 200%;
       animation: gradient-shift 8s ease infinite;
     }
+    @keyframes beat-flash {
+      0% { background-color: rgba(255,0,255,0.15); }
+      100% { background-color: transparent; }
+    }
+    @keyframes perfect-timing {
+      0% { transform: scale(0.5) translateY(0); opacity: 1; }
+      100% { transform: scale(1.5) translateY(-40px); opacity: 0; }
+    }
+    @keyframes combo-pop {
+      0% { transform: scale(0.5); opacity: 0; }
+      50% { transform: scale(1.4); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .beat-flash { animation: beat-flash 0.15s ease-out; }
+    .spectrum-bar {
+      transition: width 0.18s ease-out;
+      border-radius: 2px;
+    }
+    .bpm-badge {
+      font-variant-numeric: tabular-nums;
+      animation: pulse-glow 2s ease-in-out infinite;
+      --glow-color: rgba(255,0,255,0.3);
+    }
+    .kick-pulse { transition: transform 0.08s ease; }
   `;
   document.head.appendChild(style);
 }
@@ -165,9 +212,10 @@ function sendTapRate(rate: number): void {
   });
 }
 
-function sendReaction(emoji: string): void {
+function sendReaction(emoji: string, size: number = 1): void {
   void push(ref(db, "ravespace/crowd/reactions"), {
     emoji,
+    size,
     ts: Date.now(),
   });
 }
@@ -240,6 +288,8 @@ function buildJoinScreen(root: HTMLElement, onJoin: () => void): void {
 function buildEnergyTab(): {
   panel: HTMLElement;
   startTapTracking: () => void;
+  audioBars: { bass: HTMLElement; mid: HTMLElement; treble: HTMLElement };
+  tapBtn: HTMLElement;
 } {
   const panel = h("div", "tab-panel flex-col items-center justify-center gap-6 px-4 py-6");
 
@@ -289,6 +339,30 @@ function buildEnergyTab(): {
   barOuter.appendChild(barInner);
   barWrap.appendChild(barOuter);
   panel.appendChild(barWrap);
+
+  // Audio spectrum bars (updated by telemetry from the display app)
+  const spectrumWrap = h("div", "w-full max-w-xs mt-4");
+  const spectrumLabel = h("p", "text-xs text-gray-500 mb-2 tracking-widest", "AUDIO SPECTRUM");
+  spectrumWrap.appendChild(spectrumLabel);
+
+  const makeSpectrumBar = (label: string, color: string): HTMLElement => {
+    const row = h("div", "flex items-center gap-2 mb-1");
+    const lbl = h("span", "text-[10px] text-gray-500 w-12 text-right", label);
+    const outer = h("div", "flex-1 h-2 rounded-full overflow-hidden");
+    outer.style.background = "rgba(255,255,255,0.05)";
+    const inner = h("div", "spectrum-bar h-full");
+    inner.style.cssText = `width: 0%; background: ${color};`;
+    outer.appendChild(inner);
+    row.appendChild(lbl);
+    row.appendChild(outer);
+    spectrumWrap.appendChild(row);
+    return inner;
+  };
+
+  const bassBar = makeSpectrumBar("BASS", "#ff00ff");
+  const midBar = makeSpectrumBar("MID", "#00ffff");
+  const trebleBar = makeSpectrumBar("TREBLE", "#ffff00");
+  panel.appendChild(spectrumWrap);
 
   // Shake hint
   const shakeHint = h("p", "text-gray-600 text-xs mt-2", "or SHAKE your phone!");
@@ -376,7 +450,7 @@ function buildEnergyTab(): {
     });
   }
 
-  return { panel, startTapTracking };
+  return { panel, startTapTracking, audioBars: { bass: bassBar, mid: midBar, treble: trebleBar }, tapBtn: btn };
 }
 
 // ─── React Tab ──────────────────────────────────────────────
@@ -396,32 +470,79 @@ function buildReactTab(): HTMLElement {
     btn.style.cssText = `
       background: rgba(255,255,255,0.05);
       border: 1px solid rgba(255,255,255,0.1);
+      position: relative;
+      overflow: visible;
     `;
     btn.textContent = emoji;
-    btn.addEventListener("click", () => {
+
+    // Hold-for-size tracking
+    let holdStart = 0;
+
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      holdStart = Date.now();
+    });
+
+    const doSend = () => {
       const now = Date.now();
       if (now - lastReaction < REACTION_COOLDOWN_MS) return;
       lastReaction = now;
-      haptic(20);
-      sendReaction(emoji);
+
+      // Determine size from hold duration
+      const duration = now - holdStart;
+      const size = duration >= 500 ? 3 : duration >= 200 ? 2 : 1;
+
+      haptic(10 + size * 10);
+
+      // Combo tracking
+      if (emoji === comboEmoji && comboTimer) {
+        comboCount++;
+      } else {
+        comboEmoji = emoji;
+        comboCount = 1;
+      }
+      if (comboTimer) clearTimeout(comboTimer);
+      comboTimer = setTimeout(() => {
+        comboCount = 0;
+        comboEmoji = "";
+        comboTimer = null;
+      }, COMBO_WINDOW_MS);
+
+      sendReaction(emoji, size);
+
+      // Button press animation
       btn.style.animation = "none";
       void btn.offsetWidth;
       btn.style.animation = "btn-press 0.15s ease";
 
-      // Flash feedback
-      const flash = h("span", "absolute text-xs text-cyan-400 font-bold pointer-events-none", "SENT!");
-      flash.style.cssText = "animation: slide-up 0.4s ease forwards; opacity: 0;";
-      btn.style.position = "relative";
-      btn.style.overflow = "visible";
+      // Flash feedback — show combo count or "SENT!"
+      let feedbackText = size > 1 ? `SENT x${size}!` : "SENT!";
+      if (comboCount > 1) feedbackText = `x${comboCount} COMBO!`;
+
+      const flash = h("span", "absolute text-xs font-bold pointer-events-none");
+      flash.style.cssText = `animation: slide-up 0.4s ease forwards; opacity: 0; top: -4px; left: 50%; transform: translateX(-50%); white-space: nowrap;`;
+      flash.style.color = comboCount > 1 ? "#ff00ff" : "#00ffff";
+      flash.textContent = feedbackText;
       btn.appendChild(flash);
       setTimeout(() => flash.remove(), 400);
-    });
+
+      // Beat sync bonus — "PERFECT TIMING" if sending on a beat
+      if (audioTelemetry?.beat) {
+        const perfect = h("span", "absolute text-[10px] font-bold pointer-events-none", "⚡ PERFECT TIMING");
+        perfect.style.cssText = `animation: perfect-timing 0.6s ease forwards; color: #ffff00; white-space: nowrap; top: -18px; left: 50%; transform: translateX(-50%);`;
+        btn.appendChild(perfect);
+        setTimeout(() => perfect.remove(), 600);
+      }
+    };
+
+    btn.addEventListener("pointerup", doSend);
+    btn.addEventListener("click", (e) => e.preventDefault()); // avoid double-fire
     grid.appendChild(btn);
   }
 
   panel.appendChild(grid);
 
-  const hint = h("p", "text-gray-600 text-xs mt-2", "Tap an emoji to send it flying across the screen!");
+  const hint = h("p", "text-gray-600 text-xs mt-2", "Tap to send • Hold for bigger emoji • Rapid tap for combos!");
   panel.appendChild(hint);
 
   return panel;
@@ -632,6 +753,15 @@ function buildMainUI(root: HTMLElement): void {
 
   const crowdCount = h("span", "text-xs text-gray-600", "");
   header.appendChild(crowdCount);
+
+  const bpmBadge = h("span", "bpm-badge text-xs font-bold px-2 py-0.5 rounded-full");
+  bpmBadge.style.cssText += `
+    background: rgba(255,0,255,0.15);
+    color: #ff88ff;
+    border: 1px solid rgba(255,0,255,0.3);
+    display: none;
+  `;
+  header.appendChild(bpmBadge);
   root.appendChild(header);
 
   // Listen for connected count
@@ -646,7 +776,7 @@ function buildMainUI(root: HTMLElement): void {
   main.style.paddingBottom = "72px"; // nav height
 
   // Build tabs
-  const { panel: energyPanel, startTapTracking } = buildEnergyTab();
+  const { panel: energyPanel, startTapTracking, audioBars, tapBtn } = buildEnergyTab();
   const reactPanel = buildReactTab();
   const colorsPanel = buildColorsTab();
   const shoutoutPanel = buildShoutoutTab();
@@ -669,6 +799,59 @@ function buildMainUI(root: HTMLElement): void {
   // Start systems
   registerPresence();
   startTapTracking();
+
+  // ─── Audio Telemetry Listener ─────────────────────────────
+  // Subscribe to the display app's audio telemetry at 5Hz
+  let beatHapticEnabled = false;
+
+  onValue(ref(db, "ravespace/telemetry/audio"), (snap) => {
+    const data = snap.val() as AudioTelemetry | null;
+    if (!data) return;
+    audioTelemetry = data;
+
+    // BPM badge
+    if (data.bpm > 0) {
+      bpmBadge.textContent = `💓 ${data.bpm} BPM`;
+      bpmBadge.style.display = "";
+    } else {
+      bpmBadge.style.display = "none";
+    }
+
+    // Audio spectrum bars
+    audioBars.bass.style.width = `${Math.min(100, data.bass * 100)}%`;
+    audioBars.mid.style.width = `${Math.min(100, data.mid * 100)}%`;
+    audioBars.treble.style.width = `${Math.min(100, data.treble * 100)}%`;
+
+    // Beat flash — rising edge only (false → true)
+    if (data.beat && !lastBeatState) {
+      root.classList.remove("beat-flash");
+      void root.offsetWidth;
+      root.classList.add("beat-flash");
+
+      // Beat-synced haptic (opt-in)
+      if (beatHapticEnabled) haptic(10);
+    }
+    lastBeatState = data.beat;
+
+    // Kick pulse on tap button
+    if (data.kick > 0.5) {
+      tapBtn.style.transform = `scale(${1 + data.kick * 0.08})`;
+    } else {
+      tapBtn.style.transform = "";
+    }
+  });
+
+  // Beat haptic toggle (small toggle in header area)
+  const hapticToggle = h("button", "text-[10px] text-gray-600 px-1.5 py-0.5 rounded cursor-pointer bg-transparent border-none");
+  hapticToggle.textContent = "🔇 haptic";
+  hapticToggle.style.cssText += "border: 1px solid rgba(255,255,255,0.1); -webkit-tap-highlight-color: transparent;";
+  hapticToggle.addEventListener("click", () => {
+    beatHapticEnabled = !beatHapticEnabled;
+    hapticToggle.textContent = beatHapticEnabled ? "📳 haptic" : "🔇 haptic";
+    hapticToggle.style.borderColor = beatHapticEnabled ? "rgba(0,255,255,0.4)" : "rgba(255,255,255,0.1)";
+    if (beatHapticEnabled) haptic(30);
+  });
+  header.appendChild(hapticToggle);
 }
 
 // ─── Boot ───────────────────────────────────────────────────

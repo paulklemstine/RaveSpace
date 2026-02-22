@@ -45,6 +45,7 @@ import { AutoVJ } from "./agent/AutoVJ";
 import { GeminiPhraseGen } from "./agent/GeminiPhraseGen";
 import { CalloutOverlay } from "./engine/CalloutOverlay";
 import { CrowdOverlay } from "./engine/CrowdOverlay";
+import { EmojiRain } from "./engine/EmojiRain";
 import { ref, onValue } from "firebase/database";
 import { db } from "./firebase/config";
 
@@ -194,6 +195,8 @@ async function boot() {
     console.warn("[RaveSpace] VITE_GEMINI_API_KEY not set — AI phrases will use fallback mode");
   }
   const phraseGen = new GeminiPhraseGen(geminiKey);
+  // Aggressive prefetch: fill cache for all energy levels on boot
+  void phraseGen.prefetchAll();
   autoVJ.setPhraseGen(phraseGen);
 
   // Listen for AI mode toggle from control panel
@@ -241,6 +244,10 @@ async function boot() {
   // Crowd overlay: emoji reactions + crowd energy/color aggregation
   const crowdOverlay = new CrowdOverlay();
   crowdOverlay.start();
+
+  // Emoji rain: ambient emojis sprinkled across the screen, synced to music
+  const emojiRain = new EmojiRain(audio);
+  emojiRain.start();
 
   // Diagnostic overlay: toggle with D key
   new DiagnosticOverlay(renderer, audio);

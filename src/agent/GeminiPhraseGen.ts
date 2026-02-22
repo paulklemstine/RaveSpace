@@ -188,9 +188,9 @@ const HORDE_FAST_MODELS = [
 ];
 
 // ─── Shared Config ───────────────────────────────────────────────
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const MIN_CACHE_SIZE = 3;
-const BATCH_SIZE = 8;
+const CACHE_TTL_MS = 10 * 60 * 1000;
+const MIN_CACHE_SIZE = 5;
+const BATCH_SIZE = 12;
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1000;
 
@@ -260,6 +260,22 @@ export class GeminiPhraseGen {
     }
 
     return this.getFallback(energy);
+  }
+
+  /** Prefetch all energy levels on boot to warm the cache */
+  async prefetchAll(): Promise<void> {
+    const levels: EnergyLevel[] = ["low", "medium", "high", "peak"];
+    console.log("[PhraseGen] Prefetching all energy levels on boot...");
+    await Promise.allSettled(levels.map((level) => this.prefetch(level)));
+    console.log("[PhraseGen] Boot prefetch complete");
+  }
+
+  /** Fire-and-forget prefetch of adjacent energy levels */
+  prefetchNextLevel(current: EnergyLevel): void {
+    const order: EnergyLevel[] = ["low", "medium", "high", "peak"];
+    const idx = order.indexOf(current);
+    if (idx < order.length - 1) void this.prefetch(order[idx + 1]!);
+    if (idx > 0) void this.prefetch(order[idx - 1]!);
   }
 
   async prefetch(
@@ -338,7 +354,7 @@ export class GeminiPhraseGen {
       body: JSON.stringify({
         prompt,
         params: {
-          max_length: 80,
+          max_length: 200,
           max_context_length: 256,
           temperature: 1.1,
           top_p: 0.9,
