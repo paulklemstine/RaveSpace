@@ -1,12 +1,14 @@
 import { WebGLRenderer } from "three";
 import type { Scene } from "../types/scene";
 import { SILENT_AUDIO } from "../types/audio";
+import type { AudioAnalyzer } from "../audio/AudioAnalyzer";
 
 export class Renderer {
   private renderer: WebGLRenderer;
   private scene: Scene | null = null;
   private animationId = 0;
   private startTime = 0;
+  private audioAnalyzer: AudioAnalyzer | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
@@ -24,6 +26,10 @@ export class Renderer {
     this.scene = scene;
     scene.init(this.renderer);
     scene.resize(window.innerWidth, window.innerHeight);
+  }
+
+  setAudioAnalyzer(analyzer: AudioAnalyzer): void {
+    this.audioAnalyzer = analyzer;
   }
 
   start(): void {
@@ -48,7 +54,8 @@ export class Renderer {
   private loop = (): void => {
     this.animationId = requestAnimationFrame(this.loop);
     const time = performance.now() / 1000 - this.startTime;
-    this.scene?.update(time, SILENT_AUDIO);
+    const audio = this.audioAnalyzer?.getFeatures() ?? SILENT_AUDIO;
+    this.scene?.update(time, audio);
   };
 
   private resize = (): void => {
