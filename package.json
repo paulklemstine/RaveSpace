@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest --watch",
-    "post-deploy": "tsx scripts/post-deploy.ts"
+    "post-deploy": "tsx scripts/post-deploy.ts",
+    "deploy": "npm run build && FUNCTIONS_DISCOVERY_TIMEOUT=60000 firebase deploy --only hosting,database && npm run post-deploy"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

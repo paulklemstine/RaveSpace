@@ -363,4 +363,62 @@ export const SCENE_REGISTRY: readonly SceneMetadata[] = [
       { type: "select", key: "colorScheme", label: "Colors", options: ["lightning", "tesla", "plasma", "storm"], default: "lightning" },
     ],
   },
+  {
+    id: "sacredgeometry",
+    displayName: "Sacred Geometry",
+    params: [
+      { type: "number", key: "speed", label: "Speed", min: 0.1, max: 5.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "complexity", label: "Complexity", min: 0.0, max: 1.0, step: 0.1, default: 0.7 },
+      { type: "number", key: "symmetry", label: "Symmetry", min: 3.0, max: 12.0, step: 1.0, default: 6.0 },
+      { type: "number", key: "audioReactivity", label: "Audio Reactivity", min: 0.0, max: 2.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "colorShift", label: "Color Shift", min: 0.0, max: 1.0, step: 0.01, default: 0.0 },
+    ],
+  },
+  {
+    id: "fractal",
+    displayName: "Fractal Dreams",
+    params: [
+      { type: "number", key: "speed", label: "Speed", min: 0.1, max: 5.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "zoom", label: "Zoom", min: 0.1, max: 5.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "iterations", label: "Detail", min: 0.1, max: 1.0, step: 0.05, default: 0.5 },
+      { type: "number", key: "audioReactivity", label: "Audio Reactivity", min: 0.0, max: 2.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "colorShift", label: "Color Shift", min: 0.0, max: 1.0, step: 0.01, default: 0.0 },
+      { type: "select", key: "fractalType", label: "Fractal Type", options: ["julia", "mandelbrot"], default: "julia" },
+    ],
+  },
+  {
+    id: "kaleidoscope",
+    displayName: "Kaleidoscope",
+    params: [
+      { type: "number", key: "speed", label: "Speed", min: 0.1, max: 5.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "segments", label: "Segments", min: 3.0, max: 16.0, step: 1.0, default: 8.0 },
+      { type: "number", key: "zoom", label: "Zoom", min: 0.2, max: 3.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "complexity", label: "Complexity", min: 0.0, max: 1.0, step: 0.1, default: 0.5 },
+      { type: "number", key: "audioReactivity", label: "Audio Reactivity", min: 0.0, max: 2.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "colorShift", label: "Color Shift", min: 0.0, max: 1.0, step: 0.01, default: 0.0 },
+    ],
+  },
+  {
+    id: "cosmicweb",
+    displayName: "Cosmic Web",
+    params: [
+      { type: "number", key: "speed", label: "Speed", min: 0.1, max: 5.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "scale", label: "Scale", min: 1.0, max: 8.0, step: 0.5, default: 3.0 },
+      { type: "number", key: "glow", label: "Glow", min: 0.0, max: 3.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "audioReactivity", label: "Audio Reactivity", min: 0.0, max: 2.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "colorShift", label: "Color Shift", min: 0.0, max: 1.0, step: 0.01, default: 0.0 },
+    ],
+  },
+  {
+    id: "acidwarp",
+    displayName: "Acid Warp",
+    params: [
+      { type: "number", key: "speed", label: "Speed", min: 0.1, max: 5.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "warpIntensity", label: "Warp Intensity", min: 0.1, max: 3.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "colorDensity", label: "Color Density", min: 1.0, max: 8.0, step: 0.5, default: 3.0 },
+      { type: "number", key: "flowSpeed", label: "Flow Speed", min: 0.1, max: 3.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "audioReactivity", label: "Audio Reactivity", min: 0.0, max: 2.0, step: 0.1, default: 1.0 },
+      { type: "number", key: "colorShift", label: "Color Shift", min: 0.0, max: 1.0, step: 0.01, default: 0.0 },
+    ],
+  },
 ] as const;

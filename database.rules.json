@@ -35,7 +35,7 @@
     "ravespace": {
       ".read": true,
       "version": {
-        ".write": "auth != null"
+        ".write": true
       },
       "params": {
         ".write": "auth != null"
@@ -45,6 +45,10 @@
         ".read": true
       },
       "telemetry": {
+        ".write": true,
+        ".read": true
+      },
+      "callouts": {
         ".write": true,
         ".read": true
       }

@@ -64,7 +64,7 @@ export class EmojiRain {
   private lastTime = 0;
   private spawnAccumulator = 0;
   private lastBeat = false;
-  private enabled = true;
+  private enabled = false;
   private lockedEmoji: string | null = null;
 
   constructor(audio: AudioAnalyzer) {
