@@ -24,6 +24,12 @@ const REGISTRY_MAP = Object.fromEntries(
   SCENE_REGISTRY.map((s) => [s.id, s]),
 );
 
+interface OverlaySlot {
+  scene: string;
+  blendMode: string;
+  opacity: number;
+}
+
 export class AutoVJ {
   private enabled = false;
   private state: AutoVJState = "idle";
@@ -38,6 +44,9 @@ export class AutoVJ {
   // Smoothed energy for trend detection
   private energySmoothed = 0;
   private prevEnergyLevel: EnergyLevel = "low";
+
+  // Multi-layer overlay state (up to 3 overlays)
+  private activeOverlays: (OverlaySlot | null)[] = [null, null, null];
 
   // Phrase generation
   private phraseGen: GeminiPhraseGen | null = null;
@@ -111,9 +120,9 @@ export class AutoVJ {
       this.tweakParams(nowSec);
     }
 
-    // Periodic overlay check (every 10 seconds)
-    if (nowSec - this.lastOverlayCheck > 10) {
-      this.maybeToggleOverlay(nowSec);
+    // Periodic overlay check (every 8 seconds)
+    if (nowSec - this.lastOverlayCheck > 8) {
+      this.manageOverlayLayers(nowSec);
     }
 
     // State machine
@@ -227,6 +236,9 @@ export class AutoVJ {
     // Adjust effects settings based on energy
     this.adjustEffects();
 
+    // Reconfigure overlay layers for new energy level
+    this.manageOverlayLayers(nowSec);
+
     void set(ref(db, "ravespace/control/aiMode/lastAction"),
       `Energy: ${this.currentEnergy} → intensity ${intensity.toFixed(1)}, speed ${speed.toFixed(1)}`);
   }
@@ -296,10 +308,6 @@ export class AutoVJ {
 
   /**
    * Generates randomized params for a scene, biased by current energy level.
-   * - Number params: random within [min, max], with intensity-like params
-   *   biased toward higher values at higher energy levels.
-   * - Select params: random option.
-   * - Boolean params: weighted by energy (higher energy → more likely true).
    */
   private generateSceneParams(sceneId: string): Record<string, number | boolean | string> | null {
     const meta = REGISTRY_MAP[sceneId];
@@ -315,13 +323,11 @@ export class AutoVJ {
           const np = desc as NumberParam;
           const isIntensityParam = INTENSITY_PARAM_KEYS.test(np.key);
           if (isIntensityParam) {
-            // Bias toward higher end proportional to energy
             const base = randomInRange(np.min, np.max);
             params[np.key] = np.min + (np.max - np.min) * (base / np.max * (1 - bias) + bias);
           } else {
             params[np.key] = randomInRange(np.min, np.max);
           }
-          // Snap to step resolution
           params[np.key] = Math.round((params[np.key] as number) / np.step) * np.step;
           break;
         }
@@ -331,15 +337,12 @@ export class AutoVJ {
           break;
         }
         case "boolean": {
-          // Higher energy → higher chance of true for "on" features
           params[desc.key] = Math.random() < 0.5 + bias * 0.5;
           break;
         }
         case "color": {
-          // Random hue as hex
           const hue = Math.floor(Math.random() * 360);
-          const rgb = hslToHex(hue, 100, 50);
-          params[desc.key] = rgb;
+          params[desc.key] = hslToHex(hue, 100, 50);
           break;
         }
       }
@@ -351,32 +354,27 @@ export class AutoVJ {
   /**
    * Generate random band→param mappings for a scene.
    * Picks 1-3 number params, assigns random bands, amounts, and modes.
-   * Bass bands (0-3) are preferred for intensity-like params.
    */
   private generateBandMappings(sceneId: string): BandMapping[] {
     const meta = REGISTRY_MAP[sceneId];
     if (!meta) return [];
 
-    // Collect number params only
     const numberParams = meta.params.filter(
       (p): p is NumberParam => p.type === "number",
     );
     if (numberParams.length === 0) return [];
 
-    // Pick 1-3 params to modulate
     const count = Math.min(
       numberParams.length,
       1 + Math.floor(Math.random() * 3),
     );
 
-    // Shuffle and take first `count`
     const shuffled = [...numberParams].sort(() => Math.random() - 0.5);
     const selected = shuffled.slice(0, count);
 
     const mappings: BandMapping[] = [];
     for (const param of selected) {
       const isIntensity = INTENSITY_PARAM_KEYS.test(param.key);
-      // Bass bands (0-3) for intensity params, mid/treble (4-14) for others
       const bandIndex = isIntensity
         ? Math.floor(Math.random() * 4) // bands 0-3 (sub-bass to bass)
         : 4 + Math.floor(Math.random() * 11); // bands 4-14
@@ -384,7 +382,7 @@ export class AutoVJ {
       mappings.push({
         paramKey: param.key,
         bandIndex,
-        amount: 0.2 + Math.random() * 0.6, // 0.2 - 0.8
+        amount: 0.2 + Math.random() * 0.6,
         mode: Math.random() < 0.6 ? "add" : "multiply",
       });
     }
@@ -394,10 +392,6 @@ export class AutoVJ {
 
   // ─── Periodic Param Tweaking ────────────────────────────────
 
-  /**
-   * Nudges 1-2 random number params on the current scene slightly,
-   * creating organic drift without full randomization.
-   */
   private tweakParams(nowSec: number): void {
     this.lastParamTweak = nowSec;
 
@@ -416,14 +410,10 @@ export class AutoVJ {
 
     for (const np of toTweak) {
       const range = np.max - np.min;
-      // Drift by ±5-15% of param range
       const drift = (Math.random() - 0.5) * range * 0.2;
-      // For intensity params, bias drift upward with energy
       const isIntensity = INTENSITY_PARAM_KEYS.test(np.key);
       const biasedDrift = isIntensity ? drift + range * profile.paramEnergyBias * 0.1 : drift;
 
-      // We don't know current value, so use a reasonable base from defaults + drift
-      // Use update() so we read the path directly
       const defaultVal = np.default;
       const newVal = Math.max(np.min, Math.min(np.max, defaultVal + biasedDrift));
       updates[np.key] = Math.round(newVal / np.step) * np.step;
@@ -438,9 +428,6 @@ export class AutoVJ {
 
   // ─── Spike Params on Drop ───────────────────────────────────
 
-  /**
-   * On a drop, maxes out all intensity-like params for the current scene.
-   */
   private spikeParams(): void {
     const meta = REGISTRY_MAP[this.currentScene];
     if (!meta) return;
@@ -450,7 +437,6 @@ export class AutoVJ {
       if (desc.type === "number") {
         const np = desc as NumberParam;
         if (INTENSITY_PARAM_KEYS.test(np.key)) {
-          // Push to 80-100% of max
           updates[np.key] = Math.round(randomInRange(np.max * 0.8, np.max) / np.step) * np.step;
         }
       }
@@ -461,9 +447,6 @@ export class AutoVJ {
     }
   }
 
-  /**
-   * During builds, nudge intensity-like params upward.
-   */
   private nudgeIntensityParams(factor: number): void {
     const meta = REGISTRY_MAP[this.currentScene];
     if (!meta) return;
@@ -491,7 +474,6 @@ export class AutoVJ {
     if (nowSec - this.lastPhraseTime < this.phraseInterval) return;
     if (this.calloutActive) return;
 
-    // Check if audience queue is backed up (>3 items) — let them through first
     try {
       const { get: fbGet } = await import("firebase/database");
       const queueSnap = await fbGet(ref(db, "ravespace/callouts/queue"));
@@ -528,46 +510,75 @@ export class AutoVJ {
     this.calloutUnsub?.();
   }
 
-  // ─── Overlay Compositing ────────────────────────────────────
+  // ─── Multi-Layer Overlay Management ────────────────────────
 
   /**
-   * Probabilistically enables/disables an overlay scene based on the
-   * current energy profile's overlayChance.
+   * Manages up to 3 overlay layers based on current energy level.
+   * Higher energy = more layers, more aggressive blending.
    */
-  private maybeToggleOverlay(nowSec: number): void {
+  private manageOverlayLayers(nowSec: number): void {
     this.lastOverlayCheck = nowSec;
 
     const profile = MOOD_PROFILES[this.currentEnergy];
+    const maxLayers = profile.maxOverlayLayers;
 
-    if (Math.random() < profile.overlayChance) {
-      // Enable overlay with random scene (different from primary)
-      const candidates = profile.scenes.filter((s) => s !== this.currentScene);
-      if (candidates.length === 0) return;
+    // Determine how many overlay layers to have active
+    let targetLayerCount = 0;
+    for (let i = 0; i < maxLayers; i++) {
+      // Each additional layer is less likely
+      const chance = profile.overlayChance * Math.pow(0.6, i);
+      if (Math.random() < chance) {
+        targetLayerCount = i + 1;
+      } else {
+        break;
+      }
+    }
+
+    // Build the overlays array
+    const overlays: (OverlaySlot | null)[] = [null, null, null];
+    const usedScenes = new Set<string>([this.currentScene]);
+
+    for (let i = 0; i < targetLayerCount; i++) {
+      const candidates = profile.scenes.filter((s) => !usedScenes.has(s));
+      if (candidates.length === 0) break;
 
       const overlayScene = pickRandom(candidates);
-      const blendMode = pickRandom(profile.overlayBlendModes);
-      const opacity = randomInRange(...profile.overlayOpacityRange);
+      usedScenes.add(overlayScene);
 
-      void set(ref(db, "ravespace/control/overlay"), {
+      const blendMode = pickRandom(profile.overlayBlendModes);
+      // Decrease opacity for each successive layer
+      const baseOpacity = randomInRange(...profile.overlayOpacityRange);
+      const opacity = baseOpacity * Math.pow(0.7, i);
+
+      overlays[i] = {
         scene: overlayScene,
         blendMode,
         opacity: Math.round(opacity * 100) / 100,
-      });
+      };
+    }
 
+    // Push to Firebase
+    const overlayData = overlays.map((slot) =>
+      slot
+        ? { scene: slot.scene, blendMode: slot.blendMode, opacity: slot.opacity }
+        : { scene: "" },
+    );
+    void set(ref(db, "ravespace/control/overlays"), overlayData);
+
+    this.activeOverlays = overlays;
+
+    const activeNames = overlays
+      .filter((o) => o !== null)
+      .map((o) => `${o!.scene}(${o!.blendMode}@${(o!.opacity * 100).toFixed(0)}%)`);
+
+    if (activeNames.length > 0) {
       void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Overlay: ${overlayScene} (${blendMode} @ ${(opacity * 100).toFixed(0)}%)`);
-    } else {
-      // Clear overlay
-      void set(ref(db, "ravespace/control/overlay"), { scene: "" });
+        `Layers: ${activeNames.join(" + ")}`);
     }
   }
 
   // ─── Effects Settings ───────────────────────────────────────
 
-  /**
-   * Adjusts the EffectsLayer settings based on current energy.
-   * Higher energy → more effects enabled, higher sensitivity.
-   */
   private adjustEffects(): void {
     const profile = MOOD_PROFILES[this.currentEnergy];
     const sensitivity = randomInRange(...profile.effectsSensitivityRange);

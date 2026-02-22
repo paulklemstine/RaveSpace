@@ -65,7 +65,50 @@ export class ControlListener {
       }),
     );
 
-    // Listen for overlay scene composite settings
+    // Listen for multi-layer overlay settings (up to 3 overlays = 4 total layers)
+    const overlaysRef = ref(db, "ravespace/control/overlays");
+    this.unsubscribers.push(
+      onValue(overlaysRef, (snapshot) => {
+        const data = snapshot.val() as Array<{
+          scene?: string;
+          blendMode?: string;
+          opacity?: number;
+        }> | null;
+        if (!data || !Array.isArray(data)) {
+          this.renderer.clearAllOverlays();
+          return;
+        }
+        for (let i = 0; i < 3; i++) {
+          const layerData = data[i];
+          if (!layerData?.scene) {
+            this.renderer.clearOverlayLayer(i);
+            continue;
+          }
+          if (layerData.scene !== this.renderer.getOverlayLayerName(i)) {
+            try {
+              this.renderer.setOverlayLayer(
+                i,
+                layerData.scene,
+                this.sceneManager,
+                layerData.blendMode ?? "screen",
+                layerData.opacity ?? 0.3,
+              );
+            } catch (e) {
+              console.warn(`Failed to set overlay layer ${i}:`, e);
+            }
+          } else {
+            if (layerData.blendMode) {
+              this.renderer.setOverlayLayerBlendMode(i, layerData.blendMode);
+            }
+            if (layerData.opacity !== undefined) {
+              this.renderer.setOverlayLayerOpacity(i, layerData.opacity);
+            }
+          }
+        }
+      }),
+    );
+
+    // Legacy single-overlay listener (backward compat)
     const overlayRef = ref(db, "ravespace/control/overlay");
     this.unsubscribers.push(
       onValue(overlayRef, (snapshot) => {
@@ -78,7 +121,6 @@ export class ControlListener {
           this.renderer.clearOverlayScene();
           return;
         }
-        // Only set if overlay scene changed
         if (data.scene !== this.renderer.getOverlaySceneName()) {
           try {
             this.renderer.setOverlayScene(data.scene, this.sceneManager);

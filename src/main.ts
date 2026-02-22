@@ -10,6 +10,30 @@ import { FractalDive } from "./scenes/FractalDive";
 import { Kaleidoscope } from "./scenes/Kaleidoscope";
 import { GodRays } from "./scenes/GodRays";
 import { LiquidDream } from "./scenes/LiquidDream";
+import { VoidWarp } from "./scenes/VoidWarp";
+import { NeonGrid } from "./scenes/NeonGrid";
+import { DigitalRain } from "./scenes/DigitalRain";
+import { Starfield } from "./scenes/Starfield";
+import { MoirePatterns } from "./scenes/MoirePatterns";
+import { CellularFlow } from "./scenes/CellularFlow";
+import { LaserGrid } from "./scenes/LaserGrid";
+import { WaveformViz } from "./scenes/WaveformViz";
+import { CircuitTrace } from "./scenes/CircuitTrace";
+import { FireStorm } from "./scenes/FireStorm";
+import { AuroraBorealis } from "./scenes/AuroraBorealis";
+import { VoronoiShatter } from "./scenes/VoronoiShatter";
+import { SuperNova } from "./scenes/SuperNova";
+import { HypnoSpiral } from "./scenes/HypnoSpiral";
+import { GlitchMatrix } from "./scenes/GlitchMatrix";
+import { HexGrid } from "./scenes/HexGrid";
+import { PrismLight } from "./scenes/PrismLight";
+import { EnergyField } from "./scenes/EnergyField";
+import { NebulaDrift } from "./scenes/NebulaDrift";
+import { CyberPulse } from "./scenes/CyberPulse";
+import { FluidDynamics } from "./scenes/FluidDynamics";
+import { MandelbrotZoom } from "./scenes/MandelbrotZoom";
+import { StainedGlass } from "./scenes/StainedGlass";
+import { ElectricStorm } from "./scenes/ElectricStorm";
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { SCENE_REGISTRY } from "./scenes/registry";
 import { TelemetryPublisher } from "./firebase/TelemetryPublisher";
@@ -76,6 +100,44 @@ function captureAndReload(): void {
   window.location.reload();
 }
 
+/** Scene factory map: registry index → factory function */
+const SCENE_FACTORIES: (() => InstanceType<typeof PlasmaShader | typeof ParticleField | typeof TunnelScene | typeof SacredGeometry | typeof FractalDive | typeof Kaleidoscope | typeof GodRays | typeof LiquidDream | typeof VoidWarp | typeof NeonGrid | typeof DigitalRain | typeof Starfield | typeof MoirePatterns | typeof CellularFlow | typeof LaserGrid | typeof WaveformViz | typeof CircuitTrace | typeof FireStorm | typeof AuroraBorealis | typeof VoronoiShatter | typeof SuperNova | typeof HypnoSpiral | typeof GlitchMatrix | typeof HexGrid | typeof PrismLight | typeof EnergyField | typeof NebulaDrift | typeof CyberPulse | typeof FluidDynamics | typeof MandelbrotZoom | typeof StainedGlass | typeof ElectricStorm>)[] = [
+  // Original 8
+  () => new PlasmaShader(),
+  () => new ParticleField(),
+  () => new TunnelScene(),
+  () => new SacredGeometry(),
+  () => new FractalDive(),
+  () => new Kaleidoscope(),
+  () => new GodRays(),
+  () => new LiquidDream(),
+  // New 24
+  () => new VoidWarp(),
+  () => new NeonGrid(),
+  () => new DigitalRain(),
+  () => new Starfield(),
+  () => new MoirePatterns(),
+  () => new CellularFlow(),
+  () => new LaserGrid(),
+  () => new WaveformViz(),
+  () => new CircuitTrace(),
+  () => new FireStorm(),
+  () => new AuroraBorealis(),
+  () => new VoronoiShatter(),
+  () => new SuperNova(),
+  () => new HypnoSpiral(),
+  () => new GlitchMatrix(),
+  () => new HexGrid(),
+  () => new PrismLight(),
+  () => new EnergyField(),
+  () => new NebulaDrift(),
+  () => new CyberPulse(),
+  () => new FluidDynamics(),
+  () => new MandelbrotZoom(),
+  () => new StainedGlass(),
+  () => new ElectricStorm(),
+];
+
 async function boot() {
   const autoUpdate = isAutoUpdate();
   clearAutoUpdateFlags();
@@ -83,28 +145,19 @@ async function boot() {
   let frozenOverlay: HTMLDivElement | null = null;
 
   if (autoUpdate) {
-    // Show the frozen frame immediately while we boot behind it
     frozenOverlay = showFrozenFrameOverlay();
-    // Skip the start screen — audio context can resume without gesture
-    // since the original gesture is still active in this browsing session
   } else {
-    // Normal first load: user click satisfies AudioContext gesture requirement
     await showStartScreen();
   }
 
   const canvas = document.getElementById("canvas") as HTMLCanvasElement;
   const renderer = new Renderer(canvas);
 
-  // Register all scenes
+  // Register all 32 scenes
   const sceneManager = new SceneManager();
-  sceneManager.register(SCENE_REGISTRY[0]!, () => new PlasmaShader());
-  sceneManager.register(SCENE_REGISTRY[1]!, () => new ParticleField());
-  sceneManager.register(SCENE_REGISTRY[2]!, () => new TunnelScene());
-  sceneManager.register(SCENE_REGISTRY[3]!, () => new SacredGeometry());
-  sceneManager.register(SCENE_REGISTRY[4]!, () => new FractalDive());
-  sceneManager.register(SCENE_REGISTRY[5]!, () => new Kaleidoscope());
-  sceneManager.register(SCENE_REGISTRY[6]!, () => new GodRays());
-  sceneManager.register(SCENE_REGISTRY[7]!, () => new LiquidDream());
+  for (let i = 0; i < SCENE_REGISTRY.length; i++) {
+    sceneManager.register(SCENE_REGISTRY[i]!, SCENE_FACTORIES[i]!);
+  }
 
   // Start audio
   const audio = new AudioAnalyzer();
