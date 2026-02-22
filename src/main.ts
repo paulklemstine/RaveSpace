@@ -188,11 +188,13 @@ async function boot() {
   const autoVJ = new AutoVJ();
 
   // Gemini phrase generation for AI callouts
-  const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
-  if (geminiKey) {
-    const phraseGen = new GeminiPhraseGen(geminiKey);
-    autoVJ.setPhraseGen(phraseGen);
+  // Always create phraseGen so fallback phrases work even without an API key
+  const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ?? "";
+  if (!geminiKey) {
+    console.warn("[RaveSpace] VITE_GEMINI_API_KEY not set — AI phrases will use fallback mode");
   }
+  const phraseGen = new GeminiPhraseGen(geminiKey);
+  autoVJ.setPhraseGen(phraseGen);
 
   // Listen for AI mode toggle from control panel
   onValue(ref(db, "ravespace/control/aiMode"), (snapshot) => {
