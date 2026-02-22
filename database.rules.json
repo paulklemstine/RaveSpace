@@ -47,6 +47,10 @@
       "telemetry": {
         ".write": true,
         ".read": true
+      },
+      "callouts": {
+        ".write": true,
+        ".read": true
       }
     }
   }
