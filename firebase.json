@@ -9,6 +9,10 @@
         "destination": "/control.html"
       },
       {
+        "source": "/audience",
+        "destination": "/audience.html"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
@@ -25,6 +29,15 @@
       },
       {
         "source": "/control.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "/audience.html",
         "headers": [
           {
             "key": "Cache-Control",

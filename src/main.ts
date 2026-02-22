@@ -9,6 +9,13 @@ import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { SCENE_REGISTRY } from "./scenes/registry";
 import { TelemetryPublisher } from "./firebase/TelemetryPublisher";
 import { ControlListener } from "./firebase/ControlListener";
+import { VersionWatcher } from "./firebase/VersionWatcher";
+import { DiagnosticOverlay } from "./ui/DiagnosticOverlay";
+import { DropDetector } from "./audio/DropDetector";
+import { AutoVJ } from "./agent/AutoVJ";
+import { CalloutOverlay } from "./engine/CalloutOverlay";
+import { ref, onValue } from "firebase/database";
+import { db } from "./firebase/config";
 
 async function boot() {
   // User click on start screen satisfies AudioContext gesture requirement
@@ -39,6 +46,50 @@ async function boot() {
   // Control listener: receive scene switches, param changes from RTDB
   const control = new ControlListener(renderer, sceneManager);
   control.start();
+
+  // AutoVJ agent: AI-driven scene/param control
+  const autoVJ = new AutoVJ();
+
+  // Listen for AI mode toggle from control panel
+  onValue(ref(db, "ravespace/control/aiMode"), (snapshot) => {
+    const data = snapshot.val() as { enabled?: boolean } | null;
+    autoVJ.setEnabled(data?.enabled === true);
+  });
+
+  // Drop detector: triggers dopamine effects on beat drops + feeds AutoVJ
+  const effects = renderer.getEffectsLayer();
+  const dropDetector = new DropDetector({
+    onDrop: (intensity) => {
+      effects.triggerDrop(intensity);
+      autoVJ.onDrop(intensity);
+    },
+    onBuild: (intensity) => {
+      autoVJ.onBuild(intensity);
+    },
+  });
+
+  // Feed audio to drop detector + AutoVJ every frame via RAF
+  const updateAudioDriven = () => {
+    const features = audio.getFeatures();
+    dropDetector.update(features);
+    autoVJ.update(features);
+    requestAnimationFrame(updateAudioDriven);
+  };
+  requestAnimationFrame(updateAudioDriven);
+
+  // Callout overlay: audience shoutouts on screen
+  const calloutOverlay = new CalloutOverlay();
+  calloutOverlay.start();
+
+  // Diagnostic overlay: toggle with D key
+  new DiagnosticOverlay(renderer, audio);
+
+  // Version watcher: auto-reload on deploy
+  const versionWatcher = new VersionWatcher();
+  versionWatcher.start((version) => {
+    console.log(`New version detected: ${version}, reloading...`);
+    setTimeout(() => window.location.reload(), 500);
+  });
 }
 
 boot();

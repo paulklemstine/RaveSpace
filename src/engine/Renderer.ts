@@ -6,6 +6,17 @@ import type { AudioFeatures } from "../types/audio";
 import type { AudioAnalyzer } from "../audio/AudioAnalyzer";
 import type { SceneManager } from "./SceneManager";
 import type { ParamValues } from "../types/params";
+import { TransitionEngine } from "./TransitionEngine";
+import { EffectsLayer } from "./EffectsLayer";
+import type { EffectsSettings } from "./EffectsLayer";
+
+export interface DiagnosticInfo {
+  fps: number;
+  sceneName: string | null;
+  transitioning: boolean;
+  blackout: boolean;
+  strobe: boolean;
+}
 
 export interface GlobalParams {
   masterIntensity: number;
@@ -30,6 +41,12 @@ export class Renderer {
   private audioAnalyzer: AudioAnalyzer | null = null;
   private globalParams: GlobalParams = { ...DEFAULT_GLOBAL_PARAMS };
   private strobeFrame = 0;
+  private transitionEngine: TransitionEngine;
+  private effectsLayer: EffectsLayer;
+  private sceneManager: SceneManager | null = null;
+  private frameCount = 0;
+  private lastFpsTime = 0;
+  private fps = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new WebGLRenderer({
@@ -38,6 +55,8 @@ export class Renderer {
       powerPreference: "high-performance",
     });
     this.renderer.setPixelRatio(window.devicePixelRatio);
+    this.transitionEngine = new TransitionEngine(this.renderer);
+    this.effectsLayer = new EffectsLayer(canvas);
     this.resize();
     window.addEventListener("resize", this.resize);
   }
@@ -50,9 +69,34 @@ export class Renderer {
   }
 
   setSceneByName(name: string, sceneManager: SceneManager): void {
-    const scene = sceneManager.create(name);
+    this.sceneManager = sceneManager;
+
+    // If no scene is active yet (first load), do instant switch
+    if (!this.scene) {
+      const scene = sceneManager.create(name);
+      this.activeSceneName = name;
+      this.setScene(scene);
+      return;
+    }
+
+    // If same scene, ignore
+    if (name === this.activeSceneName) return;
+
+    // If already transitioning, skip (let current transition finish)
+    if (this.transitionEngine.isTransitioning) return;
+
+    // Smooth transition via TransitionEngine
+    const newScene = sceneManager.create(name);
+    const oldScene = this.scene;
     this.activeSceneName = name;
-    this.setScene(scene);
+
+    this.transitionEngine.start(oldScene, newScene, () => {
+      // Transition complete — new scene is now active
+      this.scene = newScene;
+    });
+
+    // Clear reference so loop delegates to transitionEngine
+    this.scene = null;
   }
 
   getActiveSceneName(): string | null {
@@ -81,6 +125,18 @@ export class Renderer {
     }
   }
 
+  setTransition(effect: string, duration: number): void {
+    this.transitionEngine.setTransition(effect, duration);
+  }
+
+  getEffectsLayer(): EffectsLayer {
+    return this.effectsLayer;
+  }
+
+  setEffectsSettings(settings: Partial<EffectsSettings>): void {
+    this.effectsLayer.setSettings(settings);
+  }
+
   start(): void {
     this.startTime = performance.now() / 1000;
     this.loop();
@@ -97,11 +153,32 @@ export class Renderer {
     this.stop();
     window.removeEventListener("resize", this.resize);
     this.scene?.dispose();
+    this.transitionEngine.dispose();
+    this.effectsLayer.dispose();
     this.renderer.dispose();
+  }
+
+  getDiagnostics(): DiagnosticInfo {
+    return {
+      fps: this.fps,
+      sceneName: this.activeSceneName,
+      transitioning: this.transitionEngine.isTransitioning,
+      blackout: this.globalParams.blackout,
+      strobe: this.globalParams.strobe,
+    };
   }
 
   private loop = (): void => {
     this.animationId = requestAnimationFrame(this.loop);
+
+    // FPS tracking
+    this.frameCount++;
+    const now = performance.now();
+    if (now - this.lastFpsTime >= 1000) {
+      this.fps = this.frameCount;
+      this.frameCount = 0;
+      this.lastFpsTime = now;
+    }
 
     // Blackout: clear to black, skip scene render
     if (this.globalParams.blackout) {
@@ -110,12 +187,15 @@ export class Renderer {
       return;
     }
 
-    // Strobe: alternate black/render at ~15Hz
+    // Strobe: alternate black/render (BPM-synced or ~15Hz)
     if (this.globalParams.strobe) {
       this.strobeFrame++;
-      if (this.strobeFrame % 4 < 2) {
+      const rawAudioForStrobe = this.audioAnalyzer?.getFeatures() ?? SILENT_AUDIO;
+      const strobeInterval = this.effectsLayer.getStrobeInterval(rawAudioForStrobe.bpm);
+      if (this.strobeFrame % strobeInterval < strobeInterval / 2) {
         this.renderer.setClearColor(0x000000, 1);
         this.renderer.clear();
+        this.effectsLayer.update();
         return;
       }
     }
@@ -137,7 +217,15 @@ export class Renderer {
       bpm: rawAudio.bpm,
     };
 
+    // During transition, delegate to transitionEngine
+    if (this.transitionEngine.isTransitioning) {
+      this.transitionEngine.update(time, audio);
+      this.effectsLayer.update();
+      return;
+    }
+
     this.scene?.update(time, audio);
+    this.effectsLayer.update();
   };
 
   private resize = (): void => {
@@ -145,5 +233,6 @@ export class Renderer {
     const h = window.innerHeight;
     this.renderer.setSize(w, h);
     this.scene?.resize(w, h);
+    this.transitionEngine.resize(w, h);
   };
 }

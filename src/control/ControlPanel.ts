@@ -8,6 +8,10 @@ import { AudioMeters } from "./components/AudioMeters";
 import { BpmDisplay } from "./components/BpmDisplay";
 import { ParamSliders } from "./components/ParamSliders";
 import { GlobalControls } from "./components/GlobalControls";
+import { TransitionPicker } from "./components/TransitionPicker";
+import { EffectsControls } from "./components/EffectsControls";
+import { AIControls } from "./components/AIControls";
+import { CalloutPanel } from "./components/CalloutPanel";
 
 export class ControlPanel {
   private root: HTMLElement;
@@ -18,6 +22,10 @@ export class ControlPanel {
   private bpmDisplay!: BpmDisplay;
   private paramSliders!: ParamSliders;
   private globalControls!: GlobalControls;
+  private transitionPicker!: TransitionPicker;
+  private effectsControls!: EffectsControls;
+  private aiControls!: AIControls;
+  private calloutPanel!: CalloutPanel;
   private activeScene = "plasma";
 
   constructor(root: HTMLElement) {
@@ -68,6 +76,32 @@ export class ControlPanel {
     this.globalControls = new GlobalControls(content, (values) => {
       void set(ref(db, "ravespace/control/globalParams"), values);
     });
+
+    const transitionContainer = document.createElement("div");
+    transitionContainer.className = "border-t border-gray-800 pt-6";
+    this.transitionPicker = new TransitionPicker(transitionContainer, (settings) => {
+      void set(ref(db, "ravespace/control/transition"), settings);
+    });
+    content.appendChild(transitionContainer);
+
+    const effectsContainer = document.createElement("div");
+    effectsContainer.className = "border-t border-gray-800 pt-6";
+    this.effectsControls = new EffectsControls(effectsContainer, (values) => {
+      void set(ref(db, "ravespace/control/effects"), values);
+    });
+    content.appendChild(effectsContainer);
+
+    const aiContainer = document.createElement("div");
+    aiContainer.className = "border-t border-gray-800 pt-6";
+    this.aiControls = new AIControls(aiContainer, (values) => {
+      void set(ref(db, "ravespace/control/aiMode"), values);
+    });
+    content.appendChild(aiContainer);
+
+    const calloutContainer = document.createElement("div");
+    calloutContainer.className = "border-t border-gray-800 pt-6";
+    this.calloutPanel = new CalloutPanel(calloutContainer);
+    content.appendChild(calloutContainer);
 
     const paramContainer = document.createElement("div");
     paramContainer.className = "border-t border-gray-800 pt-6";
@@ -155,6 +189,39 @@ export class ControlPanel {
         const data = snapshot.val();
         if (data) {
           this.globalControls.update(data);
+        }
+      }),
+    );
+
+    // Listen to control/transition to keep UI in sync
+    const transitionRef = ref(db, "ravespace/control/transition");
+    this.unsubscribers.push(
+      onValue(transitionRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          this.transitionPicker.update(data);
+        }
+      }),
+    );
+
+    // Listen to control/effects to keep UI in sync
+    const effectsRef = ref(db, "ravespace/control/effects");
+    this.unsubscribers.push(
+      onValue(effectsRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          this.effectsControls.update(data);
+        }
+      }),
+    );
+
+    // Listen to control/aiMode to keep UI in sync
+    const aiRef = ref(db, "ravespace/control/aiMode");
+    this.unsubscribers.push(
+      onValue(aiRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          this.aiControls.update(data);
         }
       }),
     );

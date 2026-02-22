@@ -3,6 +3,7 @@ import { db } from "./config";
 import type { Renderer, GlobalParams } from "../engine/Renderer";
 import type { SceneManager } from "../engine/SceneManager";
 import type { ParamValues } from "../types/params";
+import type { EffectsSettings } from "../engine/EffectsLayer";
 
 export class ControlListener {
   private renderer: Renderer;
@@ -37,6 +38,28 @@ export class ControlListener {
         const params = snapshot.val() as Partial<GlobalParams> | null;
         if (params) {
           this.renderer.setGlobalParams(params);
+        }
+      }),
+    );
+
+    // Listen for transition changes
+    const transitionRef = ref(db, "ravespace/control/transition");
+    this.unsubscribers.push(
+      onValue(transitionRef, (snapshot) => {
+        const data = snapshot.val() as { effect?: string; duration?: number } | null;
+        if (data?.effect) {
+          this.renderer.setTransition(data.effect, data.duration ?? 3);
+        }
+      }),
+    );
+
+    // Listen for effects settings changes
+    const effectsRef = ref(db, "ravespace/control/effects");
+    this.unsubscribers.push(
+      onValue(effectsRef, (snapshot) => {
+        const data = snapshot.val() as Partial<EffectsSettings> | null;
+        if (data) {
+          this.renderer.setEffectsSettings(data);
         }
       }),
     );

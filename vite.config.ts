@@ -19,6 +19,7 @@ export default defineConfig({
       input: {
         main: path.resolve(__dirname, "index.html"),
         control: path.resolve(__dirname, "control.html"),
+        audience: path.resolve(__dirname, "audience.html"),
       },
     },
   },
