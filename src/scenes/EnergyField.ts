@@ -107,9 +107,9 @@ void main() {
   float shell = smoothstep(fieldEdge + 0.1, fieldEdge, dist) *
                 smoothstep(fieldRadius - 0.1, fieldRadius, dist);
 
-  // Surface noise on the field
-  float surfNoise = fbm(vec2(angle * 3.0, dist * 5.0 - t * 2.0)) * 0.5 +
-                    fbm(vec2(angle * 5.0 + t, dist * 8.0)) * 0.3;
+  // Surface noise on the field (cylindrical coords to avoid seam at ±π)
+  float surfNoise = fbm(vec2(cos(angle) * 3.0 + sin(angle) * 2.0, dist * 5.0 - t * 2.0)) * 0.5 +
+                    fbm(vec2(cos(angle) * 5.0 + t, sin(angle) * 5.0 + dist * 8.0)) * 0.3;
   shell *= (0.5 + surfNoise);
 
   // Inner energy

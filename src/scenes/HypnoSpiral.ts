@@ -161,9 +161,9 @@ void main() {
   );
   color = hueRot * color;
 
-  // Spectral flux distortion
+  // Spectral flux distortion (cylindrical coords to avoid seam at ±π)
   float flux = uSpectralFlux * react;
-  float distort = noise(vec2(angle * 3.0, r * 5.0 + time)) * flux;
+  float distort = noise(vec2(cos(angle) * 3.0 + sin(angle) * 2.0, r * 5.0 + time)) * flux;
   color *= 1.0 + distort * 0.3;
 
   // Distance fade (subtle)
@@ -174,8 +174,8 @@ void main() {
   float vig = 1.0 - dot(vc, vc) * 0.2;
   color *= vig;
 
-  // Treble shimmer
-  float shimmer = noise(vec2(angle * 10.0, r * 15.0 + time * 3.0));
+  // Treble shimmer (cylindrical coords to avoid seam at ±π)
+  float shimmer = noise(vec2(cos(angle) * 10.0 + sin(angle) * 7.0, r * 15.0 + time * 3.0));
   color += color * shimmer * uTreble * react * 0.15;
 
   gl_FragColor = vec4(color, 1.0);

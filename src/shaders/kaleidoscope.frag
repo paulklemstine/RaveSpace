@@ -131,9 +131,9 @@ void main() {
 
   // --- Color mapping ---
   float colorT = n * 2.0 + time * 0.08;
-  // Add angular variation for more kaleidoscopic feel
-  float angle = atan(uv.y, uv.x);
-  colorT += angle / TAU * 0.5;
+  // Add angular variation for more kaleidoscopic feel (use folded coords for seamless wrap)
+  float foldedAngle = atan(kp.y, kp.x);
+  colorT += foldedAngle / TAU * 0.5;
   // Mid frequencies shift the color
   colorT += midR * 0.3;
 

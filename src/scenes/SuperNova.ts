@@ -159,9 +159,9 @@ void main() {
   float shockwave = exp(-(r - shockwaveR) * (r - shockwaveR) * 50.0);
   shockwave *= exp(-shockwaveTime * 2.0);
 
-  // Nebula remnant - swirling gas
+  // Nebula remnant - swirling gas (cylindrical coords to avoid seam at ±π)
   float nebAngle = angle + time * 0.1;
-  float nebula = fbm(vec2(r * 3.0 + nebAngle, nebAngle * 2.0 + time * 0.2));
+  float nebula = fbm(vec2(cos(nebAngle) * 3.0 + r * 2.0, sin(nebAngle) * 3.0 + time * 0.2));
   nebula *= exp(-r * 0.5);
   nebula *= 0.5 + beatPulse * 0.5;
 
