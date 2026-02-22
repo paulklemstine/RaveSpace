@@ -1,5 +1,15 @@
 {
   "projects": {
     "default": "collabboard-8c0d0"
-  }
+  },
+  "targets": {
+    "collabboard-8c0d0": {
+      "hosting": {
+        "ravespace": [
+          "ravespace"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }
