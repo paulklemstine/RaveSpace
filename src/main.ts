@@ -44,6 +44,7 @@ import { DropDetector } from "./audio/DropDetector";
 import { AutoVJ } from "./agent/AutoVJ";
 import { GeminiPhraseGen } from "./agent/GeminiPhraseGen";
 import { CalloutOverlay } from "./engine/CalloutOverlay";
+import { CrowdOverlay } from "./engine/CrowdOverlay";
 import { ref, onValue } from "firebase/database";
 import { db } from "./firebase/config";
 
@@ -234,6 +235,10 @@ async function boot() {
   // Callout overlay: audience shoutouts on screen
   const calloutOverlay = new CalloutOverlay();
   calloutOverlay.start();
+
+  // Crowd overlay: emoji reactions + crowd energy/color aggregation
+  const crowdOverlay = new CrowdOverlay();
+  crowdOverlay.start();
 
   // Diagnostic overlay: toggle with D key
   new DiagnosticOverlay(renderer, audio);
