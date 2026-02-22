@@ -248,6 +248,22 @@ async function boot() {
   // Emoji rain: ambient emojis sprinkled across the screen, synced to music
   const emojiRain = new EmojiRain(audio);
   emojiRain.start();
+  autoVJ.setEmojiRain(emojiRain);
+
+  // Listen for emoji rain toggle from RTDB
+  onValue(ref(db, "ravespace/control/emojiRain"), (snapshot) => {
+    const data = snapshot.val() as { enabled?: boolean } | null;
+    if (data != null) {
+      emojiRain.setEnabled(data.enabled !== false);
+    }
+  });
+
+  // Toggle emoji rain with 'E' key
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "E" || e.key === "e") {
+      emojiRain.setEnabled(!emojiRain.isEnabled());
+    }
+  });
 
   // Diagnostic overlay: toggle with D key
   new DiagnosticOverlay(renderer, audio);

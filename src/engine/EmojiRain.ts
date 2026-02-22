@@ -31,10 +31,10 @@ interface Particle {
   pulsePhase: number;
 }
 
-const MAX_PARTICLES = 50;
-const BASE_SPAWN_RATE = 0.6; // per second at silence
-const MAX_SPAWN_RATE = 10; // per second at max energy
-const BEAT_BURST_COUNT = 6;
+const MAX_PARTICLES = 4;
+const BASE_SPAWN_RATE = 0.15; // per second at silence
+const MAX_SPAWN_RATE = 1.5; // per second at max energy
+const BEAT_BURST_COUNT = 1;
 
 /**
  * Ambient emoji rain overlay — pure art, synced to music.
@@ -49,6 +49,8 @@ export class EmojiRain {
   private lastTime = 0;
   private spawnAccumulator = 0;
   private lastBeat = false;
+  private enabled = true;
+  private lockedEmoji: string | null = null;
 
   constructor(audio: AudioAnalyzer) {
     this.audio = audio;
@@ -64,12 +66,25 @@ export class EmojiRain {
     document.body.appendChild(this.el);
   }
 
+  setEnabled(on: boolean): void {
+    this.enabled = on;
+  }
+
+  isEnabled(): boolean {
+    return this.enabled;
+  }
+
+  setEmoji(emoji: string): void {
+    this.lockedEmoji = emoji;
+  }
+
   start(): void {
     this.lastTime = performance.now() / 1000;
     this.animate();
   }
 
   private pickEmoji(energy: number): string {
+    if (this.lockedEmoji) return this.lockedEmoji;
     const pool = energy < 0.3 ? POOL_LOW : energy < 0.6 ? POOL_MID : POOL_HIGH;
     return pool[Math.floor(Math.random() * pool.length)]!;
   }
@@ -150,22 +165,25 @@ export class EmojiRain {
     const beat = features.beat;
     const bass = features.bass;
 
-    // Beat burst — explode emojis from center on each beat
-    if (beat && !this.lastBeat) {
-      const count = Math.ceil(BEAT_BURST_COUNT * (0.5 + energy * 0.5));
-      for (let i = 0; i < count; i++) {
-        this.spawn(energy, true);
+    // Only spawn new particles when enabled
+    if (this.enabled) {
+      // Beat burst — explode emojis from center on each beat
+      if (beat && !this.lastBeat) {
+        const count = Math.ceil(BEAT_BURST_COUNT * (0.5 + energy * 0.5));
+        for (let i = 0; i < count; i++) {
+          this.spawn(energy, true);
+        }
+      }
+
+      // Continuous ambient drift
+      const rate = BASE_SPAWN_RATE + energy * (MAX_SPAWN_RATE - BASE_SPAWN_RATE);
+      this.spawnAccumulator += rate * dt;
+      while (this.spawnAccumulator >= 1) {
+        this.spawnAccumulator -= 1;
+        this.spawn(energy);
       }
     }
     this.lastBeat = beat;
-
-    // Continuous ambient drift
-    const rate = BASE_SPAWN_RATE + energy * (MAX_SPAWN_RATE - BASE_SPAWN_RATE);
-    this.spawnAccumulator += rate * dt;
-    while (this.spawnAccumulator >= 1) {
-      this.spawnAccumulator -= 1;
-      this.spawn(energy);
-    }
 
     // Update all particles
     for (let i = this.particles.length - 1; i >= 0; i--) {

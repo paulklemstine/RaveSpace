@@ -16,6 +16,7 @@ import {
 } from "./AgentPersonality";
 import type { GeminiPhraseGen } from "./GeminiPhraseGen";
 import { pickRandomAnimation } from "../engine/callout-animations";
+import type { EmojiRain } from "../engine/EmojiRain";
 
 type AutoVJState = "idle" | "building" | "dropping" | "chilling" | "shifting";
 
@@ -55,6 +56,10 @@ export class AutoVJ {
   private lastPhraseTime = 0;
   private calloutActive = false;
   private calloutUnsub: Unsubscribe | null = null;
+
+  // Emoji rain
+  private emojiRain: EmojiRain | null = null;
+  private lastEmojiPick = 0;
   private lastBpm = 0;
 
   setPhraseGen(gen: GeminiPhraseGen): void {
@@ -65,6 +70,26 @@ export class AutoVJ {
         this.calloutActive = snapshot.exists() && snapshot.val()?.name != null;
       });
     }
+  }
+
+  private static readonly EMOJI_BY_ENERGY: Record<EnergyLevel, string[]> = {
+    low: ["✨", "🌙", "🦋", "🌸", "💫", "🪷", "🌌", "💎"],
+    medium: ["💜", "🎵", "🎶", "🩵", "💖", "⭐", "🌟", "🔮"],
+    high: ["🔥", "⚡", "💥", "🪩", "❤️‍🔥", "🎆", "☀️", "🌋"],
+    peak: ["💀", "👾", "🧨", "🎇", "🐉", "🎭", "👽", "🎪"],
+  };
+
+  setEmojiRain(rain: EmojiRain): void {
+    this.emojiRain = rain;
+    this.pickEmojiForRain();
+  }
+
+  private pickEmojiForRain(): void {
+    if (!this.emojiRain) return;
+    const pool = AutoVJ.EMOJI_BY_ENERGY[this.currentEnergy];
+    const emoji = pool[Math.floor(Math.random() * pool.length)]!;
+    this.emojiRain.setEmoji(emoji);
+    this.lastEmojiPick = performance.now() / 1000;
   }
 
   setPhrasesEnabled(enabled: boolean): void {
@@ -118,6 +143,11 @@ export class AutoVJ {
     // Periodic param tweaks (every N seconds based on mood profile)
     if (nowSec - this.lastParamTweak > profile.paramTweakInterval) {
       this.tweakParams(nowSec);
+    }
+
+    // Periodic emoji refresh (~30s)
+    if (nowSec - this.lastEmojiPick > 30) {
+      this.pickEmojiForRain();
     }
 
     // Periodic overlay check (every 8 seconds)
@@ -238,6 +268,9 @@ export class AutoVJ {
 
     // Reconfigure overlay layers for new energy level
     this.manageOverlayLayers(nowSec);
+
+    // Pick a fresh emoji for the rain overlay
+    this.pickEmojiForRain();
 
     void set(ref(db, "ravespace/control/aiMode/lastAction"),
       `Energy: ${this.currentEnergy} → intensity ${intensity.toFixed(1)}, speed ${speed.toFixed(1)}`);
