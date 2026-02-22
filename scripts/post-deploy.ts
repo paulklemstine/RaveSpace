@@ -1,8 +1,6 @@
 import { createHash } from "crypto";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
-import { initializeApp, cert, type ServiceAccount } from "firebase-admin/app";
-import { getDatabase } from "firebase-admin/database";
 
 function hashDirectory(dir: string): string {
   const hash = createHash("sha256");
@@ -27,28 +25,20 @@ async function main() {
   const distDir = join(import.meta.dirname, "..", "dist");
   const version = hashDirectory(distDir);
 
-  // Use Application Default Credentials (gcloud auth)
-  const serviceAccount = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const app = initializeApp(
-    serviceAccount
-      ? {
-          credential: cert(
-            JSON.parse(
-              readFileSync(serviceAccount, "utf-8"),
-            ) as ServiceAccount,
-          ),
-          databaseURL:
-            "https://collabboard-8c0d0-default-rtdb.firebaseio.com/",
-        }
-      : {
-          databaseURL:
-            "https://collabboard-8c0d0-default-rtdb.firebaseio.com/",
-        },
-  );
+  // Write version to RTDB via REST API (path is publicly writable)
+  const url =
+    "https://collabboard-8c0d0-default-rtdb.firebaseio.com/ravespace/version.json";
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(version),
+  });
 
-  const db = getDatabase(app);
-  await db.ref("ravespace/version").set(version);
-  console.log(`Deployed version: ${version}`);
+  if (!res.ok) {
+    throw new Error(`Failed to write version: ${res.status} ${await res.text()}`);
+  }
+
+  console.log(`Version stamped: ${version} — connected displays will auto-reload`);
 }
 
 main().catch((err) => {
