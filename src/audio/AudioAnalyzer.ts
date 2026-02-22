@@ -1,7 +1,10 @@
 import type { AudioFeatures } from "../types/audio";
+import type { PitchInfo } from "../types/bands";
+import { NUM_BANDS } from "../types/bands";
 import type { MeydaFeaturesObject } from "meyda";
 import Meyda from "meyda";
 import { createRealtimeBpmAnalyzer, type BpmAnalyzer } from "realtime-bpm-analyzer";
+import { BandAnalyzer } from "./BandAnalyzer";
 
 // --- Tuning constants ---
 const MEYDA_FFT_SIZE = 1024;
@@ -92,6 +95,11 @@ export class AudioAnalyzer {
   private beatIntensity = 0;
   private spectralFlux = 0;
 
+  // 16-band EQ + pitch
+  private bandAnalyzer = new BandAnalyzer(SAMPLE_RATE, NATIVE_FFT_SIZE);
+  private bands: Float32Array = new Float32Array(NUM_BANDS);
+  private pitch: PitchInfo = { frequency: 0, midiNote: 0, noteName: "", confidence: 0 };
+
   // Beat detection state
   private energyHistory: number[] = [];
   private rollingAvg = 0;
@@ -155,6 +163,8 @@ export class AudioAnalyzer {
       kick: this.kick,
       beatIntensity: this.beatIntensity,
       spectralFlux: this.spectralFlux,
+      bands: this.bands,
+      pitch: this.pitch,
     };
   }
 
@@ -214,6 +224,10 @@ export class AudioAnalyzer {
     }
     const rawFlux = clamp01(flux * FLUX_SENSITIVITY / NATIVE_BINS);
     this.spectralFlux = smoothAsymmetric(this.spectralFlux, rawFlux);
+
+    // 16-band EQ + pitch detection
+    this.bands = this.bandAnalyzer.analyze(linear);
+    this.pitch = this.bandAnalyzer.detectPitch(linear);
 
     // Store current spectrum for next frame
     this.prevSpectrum.set(linear);

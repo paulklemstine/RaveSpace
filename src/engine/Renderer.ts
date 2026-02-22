@@ -15,9 +15,11 @@ import type { AudioFeatures } from "../types/audio";
 import type { AudioAnalyzer } from "../audio/AudioAnalyzer";
 import type { SceneManager } from "./SceneManager";
 import type { ParamValues } from "../types/params";
+import type { BandMapping } from "../types/bands";
 import { TransitionEngine } from "./TransitionEngine";
 import { EffectsLayer } from "./EffectsLayer";
 import type { EffectsSettings } from "./EffectsLayer";
+import { BandMapper } from "../audio/BandMapper";
 
 export interface DiagnosticInfo {
   fps: number;
@@ -106,6 +108,10 @@ export class Renderer {
   private lastFpsTime = 0;
   private fps = 0;
 
+  // Band→param modulation
+  private bandMapper = new BandMapper();
+  private baseParams: ParamValues = {};
+
   // Compositing: overlay scene blended on top of primary
   private overlayScene: Scene | null = null;
   private overlaySceneName: string | null = null;
@@ -189,9 +195,14 @@ export class Renderer {
   }
 
   setSceneParams(values: ParamValues): void {
+    this.baseParams = { ...values };
     if (this.scene && isParameterizedScene(this.scene)) {
       this.scene.setParams(values);
     }
+  }
+
+  setBandMappings(mappings: BandMapping[]): void {
+    this.bandMapper.setMappings(mappings);
   }
 
   setTransition(effect: string, duration: number): void {
@@ -356,7 +367,15 @@ export class Renderer {
       kick: rawAudio.kick * intensity,
       beatIntensity: rawAudio.beatIntensity * intensity,
       spectralFlux: rawAudio.spectralFlux * intensity,
+      bands: rawAudio.bands,
+      pitch: rawAudio.pitch,
     };
+
+    // Apply band→param modulation to active scene
+    if (this.scene && isParameterizedScene(this.scene) && Object.keys(this.baseParams).length > 0) {
+      const modulated = this.bandMapper.apply(this.baseParams, audio.bands, this.scene.params);
+      this.scene.setParams(modulated);
+    }
 
     const hasOverlay = this.overlayScene !== null && this.primaryRT && this.overlayRT;
 

@@ -1,16 +1,30 @@
-import { ref, onValue, remove, type Unsubscribe } from "firebase/database";
+import { ref, onValue, remove, get, query, orderByChild, limitToFirst, type Unsubscribe } from "firebase/database";
 import { db } from "../firebase/config";
+import {
+  ANIMATIONS,
+  pickRandomAnimation,
+  type AnimationStyleName,
+  type CalloutAnimation,
+} from "./callout-animations";
 
 interface ActiveCallout {
   name: string;
   startTime: number;
   duration: number;
+  source?: "audience" | "vj" | "ai";
+  animationStyle?: AnimationStyleName;
 }
 
+type CalloutState = "idle" | "entering" | "holding" | "exiting";
+
+const ENTRANCE_DURATION = 0.8;
+const EXIT_DURATION = 1.0;
+const DEFAULT_QUEUE_INTERVAL = 15;
+
 /**
- * Psychedelic animated text overlay for audience shoutouts.
- * Each character waves, rotates, and cycles through rainbow colors.
- * Multiple glow layers create a neon DMT-style text effect.
+ * Psychedelic animated text overlay for audience shoutouts, VJ callouts, and AI phrases.
+ * Supports multiple animation styles with entrance/hold/exit state machine.
+ * Auto-processes audience queue when no active callout is showing.
  */
 export class CalloutOverlay {
   private el: HTMLDivElement;
@@ -18,12 +32,20 @@ export class CalloutOverlay {
   private glowLayer: HTMLDivElement;
   private charSpans: HTMLSpanElement[] = [];
   private glowSpans: HTMLSpanElement[] = [];
-  private unsubscribe: Unsubscribe | null = null;
-  private hideTimeout: ReturnType<typeof setTimeout> | null = null;
+  private unsubscribers: Unsubscribe[] = [];
   private rafId = 0;
   private showStartTime = 0;
-  private isShowing = false;
   private showDuration = 5;
+  private isShowing = false;
+
+  // Animation state machine
+  private state: CalloutState = "idle";
+  private stateStartTime = 0;
+  private currentAnimation: CalloutAnimation = ANIMATIONS.wave;
+
+  // Queue auto-processing
+  private queueCheckTimer: ReturnType<typeof setInterval> | null = null;
+  private queueInterval = DEFAULT_QUEUE_INTERVAL;
 
   constructor() {
     this.el = document.createElement("div");
@@ -79,17 +101,85 @@ export class CalloutOverlay {
   }
 
   start(): void {
+    // Listen for active callout
     const activeRef = ref(db, "ravespace/callouts/active");
-    this.unsubscribe = onValue(activeRef, (snapshot) => {
+    const unsub = onValue(activeRef, (snapshot) => {
       const data = snapshot.val() as ActiveCallout | null;
       if (data?.name) {
-        this.show(data.name, data.duration ?? 5);
+        this.show(data.name, data.duration ?? 5, data.animationStyle);
       }
     });
+    this.unsubscribers.push(unsub);
+
+    // Listen for settings changes (queue interval)
+    const settingsRef = ref(db, "ravespace/callouts/settings");
+    const settingsUnsub = onValue(settingsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data?.interval) {
+        this.queueInterval = data.interval;
+      }
+      this.setupQueueProcessing();
+    });
+    this.unsubscribers.push(settingsUnsub);
+
+    // Start queue auto-processing
+    this.setupQueueProcessing();
   }
 
-  private show(name: string, duration: number): void {
-    if (this.hideTimeout) clearTimeout(this.hideTimeout);
+  // ─── Queue Auto-Processing ────────────────────────────────────
+
+  private setupQueueProcessing(): void {
+    if (this.queueCheckTimer) {
+      clearInterval(this.queueCheckTimer);
+    }
+    this.queueCheckTimer = setInterval(
+      () => void this.processQueue(),
+      this.queueInterval * 1000,
+    );
+  }
+
+  private async processQueue(): Promise<void> {
+    // Don't pop if currently showing something
+    if (this.isShowing || this.state !== "idle") return;
+
+    try {
+      const queueRef = query(
+        ref(db, "ravespace/callouts/queue"),
+        orderByChild("timestamp"),
+        limitToFirst(1),
+      );
+      const snapshot = await get(queueRef);
+      if (!snapshot.exists()) return;
+
+      let oldest: { key: string; name: string } | null = null;
+      snapshot.forEach((child) => {
+        if (!oldest) {
+          oldest = { key: child.key!, name: child.val().name };
+        }
+      });
+
+      if (oldest) {
+        const { key, name } = oldest;
+        // Write to active with audience source
+        const { set } = await import("firebase/database");
+        await set(ref(db, "ravespace/callouts/active"), {
+          name,
+          startTime: Date.now(),
+          duration: 5,
+          source: "audience" as const,
+          animationStyle: pickRandomAnimation(),
+        });
+        // Remove from queue
+        await remove(ref(db, `ravespace/callouts/queue/${key}`));
+      }
+    } catch {
+      // Queue read failed — will retry next interval
+    }
+  }
+
+  // ─── Show / Animation ─────────────────────────────────────────
+
+  private show(name: string, duration: number, animationStyle?: AnimationStyleName): void {
     if (this.rafId) cancelAnimationFrame(this.rafId);
 
     this.showDuration = duration;
@@ -97,6 +187,12 @@ export class CalloutOverlay {
     this.glowSpans = [];
     this.textContainer.innerHTML = "";
     this.glowLayer.innerHTML = "";
+
+    // Pick animation
+    const styleName = animationStyle && ANIMATIONS[animationStyle]
+      ? animationStyle
+      : pickRandomAnimation();
+    this.currentAnimation = ANIMATIONS[styleName];
 
     // Create per-character spans for main text + glow layer
     for (const char of name) {
@@ -132,78 +228,68 @@ export class CalloutOverlay {
 
     this.isShowing = true;
     this.showStartTime = performance.now();
-    this.animate();
+    this.state = "entering";
+    this.stateStartTime = performance.now();
 
-    // Schedule hide
-    this.hideTimeout = setTimeout(() => {
-      this.isShowing = false;
-      // Let animation loop handle fade-out, then clean up
-      setTimeout(() => {
-        void remove(ref(db, "ravespace/callouts/active"));
-      }, 1500);
-    }, duration * 1000);
+    this.textContainer.style.opacity = "1";
+    this.glowLayer.style.opacity = "0.7";
+
+    this.animate();
   }
 
   private animate = (): void => {
     const now = performance.now();
-    const elapsed = (now - this.showStartTime) / 1000;
+    const t = (now - this.showStartTime) / 1000;
+    const stateElapsed = (now - this.stateStartTime) / 1000;
 
-    // Fade envelope: 0.5s in, hold, 1s out
-    let envelope: number;
-    if (this.isShowing) {
-      envelope = Math.min(elapsed / 0.5, 1.0);
-    } else {
-      // Fade out over 1 second after isShowing goes false
-      const fadeOutElapsed = elapsed - this.showDuration;
-      envelope = Math.max(0, 1.0 - fadeOutElapsed);
-    }
+    switch (this.state) {
+      case "entering": {
+        const progress = Math.min(1, stateElapsed / ENTRANCE_DURATION);
+        this.currentAnimation.entrance(this.charSpans, this.glowSpans, t, progress);
+        if (progress >= 1) {
+          this.state = "holding";
+          this.stateStartTime = now;
+        }
+        break;
+      }
 
-    if (envelope <= 0) {
-      this.textContainer.style.opacity = "0";
-      this.glowLayer.style.opacity = "0";
-      return; // Stop animation
-    }
+      case "holding": {
+        this.currentAnimation.hold(this.charSpans, this.glowSpans, t);
+        if (stateElapsed >= this.showDuration) {
+          this.state = "exiting";
+          this.stateStartTime = now;
+          this.isShowing = false;
+        }
+        break;
+      }
 
-    this.textContainer.style.opacity = String(envelope);
-    this.glowLayer.style.opacity = String(envelope * 0.7);
+      case "exiting": {
+        const progress = Math.min(1, stateElapsed / EXIT_DURATION);
+        this.currentAnimation.exit(this.charSpans, this.glowSpans, t, progress);
+        if (progress >= 1) {
+          this.state = "idle";
+          this.textContainer.style.opacity = "0";
+          this.glowLayer.style.opacity = "0";
+          // Clear active so queue can pop next
+          void remove(ref(db, "ravespace/callouts/active"));
+          return; // Stop animation loop
+        }
+        break;
+      }
 
-    const t = elapsed;
-    const numChars = this.charSpans.length;
-
-    for (let i = 0; i < numChars; i++) {
-      const span = this.charSpans[i]!;
-      const glowSpan = this.glowSpans[i]!;
-      const phase = i * 0.4; // offset per character
-
-      // Wavy vertical motion
-      const wave = Math.sin(t * 3.0 + phase) * 15 * envelope;
-
-      // Subtle rotation oscillation
-      const rot = Math.sin(t * 2.0 + phase * 0.7) * 8 * envelope;
-
-      // Scale pulse
-      const scale = 1.0 + Math.sin(t * 4.0 + phase * 0.5) * 0.08 * envelope;
-
-      // Rainbow gradient position (flowing)
-      const bgPos = ((t * 40 + i * 15) % 500);
-
-      // Apply to main text
-      span.style.transform = `translateY(${wave}px) rotate(${rot}deg) scale(${scale})`;
-      span.style.backgroundPosition = `${bgPos}% 0`;
-
-      // Glow color cycles through hues
-      const hue = (t * 60 + i * 30) % 360;
-      const glowColor = `hsl(${hue}, 100%, 60%)`;
-      glowSpan.style.color = glowColor;
-      glowSpan.style.transform = `translateY(${wave}px) rotate(${rot}deg) scale(${scale * 1.05})`;
+      case "idle":
+        return;
     }
 
     this.rafId = requestAnimationFrame(this.animate);
   };
 
   dispose(): void {
-    this.unsubscribe?.();
-    if (this.hideTimeout) clearTimeout(this.hideTimeout);
+    for (const unsub of this.unsubscribers) {
+      unsub();
+    }
+    this.unsubscribers = [];
+    if (this.queueCheckTimer) clearInterval(this.queueCheckTimer);
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.el.remove();
   }

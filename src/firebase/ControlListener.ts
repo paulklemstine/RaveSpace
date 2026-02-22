@@ -3,6 +3,7 @@ import { db } from "./config";
 import type { Renderer, GlobalParams } from "../engine/Renderer";
 import type { SceneManager } from "../engine/SceneManager";
 import type { ParamValues } from "../types/params";
+import type { BandMapping } from "../types/bands";
 import type { EffectsSettings } from "../engine/EffectsLayer";
 
 export class ControlListener {
@@ -90,6 +91,19 @@ export class ControlListener {
         }
         if (data.opacity !== undefined) {
           this.renderer.setOverlayOpacity(data.opacity);
+        }
+      }),
+    );
+
+    // Listen for band→param mapping changes
+    const bandMappingsRef = ref(db, "ravespace/control/bandMappings");
+    this.unsubscribers.push(
+      onValue(bandMappingsRef, (snapshot) => {
+        const data = snapshot.val() as BandMapping[] | null;
+        if (data && Array.isArray(data)) {
+          this.renderer.setBandMappings(data);
+        } else {
+          this.renderer.setBandMappings([]);
         }
       }),
     );

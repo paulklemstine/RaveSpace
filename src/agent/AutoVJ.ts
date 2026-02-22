@@ -1,7 +1,8 @@
-import { ref, set, update } from "firebase/database";
+import { ref, set, update, onValue, type Unsubscribe } from "firebase/database";
 import { db } from "../firebase/config";
 import type { AudioFeatures } from "../types/audio";
 import type { NumberParam, SelectParam } from "../types/params";
+import type { BandMapping } from "../types/bands";
 import { SCENE_REGISTRY } from "../scenes/registry";
 import {
   classifyEnergy,
@@ -13,6 +14,8 @@ import {
   randomInRange,
   type EnergyLevel,
 } from "./AgentPersonality";
+import type { GeminiPhraseGen } from "./GeminiPhraseGen";
+import { pickRandomAnimation } from "../engine/callout-animations";
 
 type AutoVJState = "idle" | "building" | "dropping" | "chilling" | "shifting";
 
@@ -35,6 +38,33 @@ export class AutoVJ {
   // Smoothed energy for trend detection
   private energySmoothed = 0;
   private prevEnergyLevel: EnergyLevel = "low";
+
+  // Phrase generation
+  private phraseGen: GeminiPhraseGen | null = null;
+  private phrasesEnabled = false;
+  private phraseInterval = 45; // seconds
+  private lastPhraseTime = 0;
+  private calloutActive = false;
+  private calloutUnsub: Unsubscribe | null = null;
+  private lastBpm = 0;
+
+  setPhraseGen(gen: GeminiPhraseGen): void {
+    this.phraseGen = gen;
+    // Listen to callout active state
+    if (!this.calloutUnsub) {
+      this.calloutUnsub = onValue(ref(db, "ravespace/callouts/active"), (snapshot) => {
+        this.calloutActive = snapshot.exists() && snapshot.val()?.name != null;
+      });
+    }
+  }
+
+  setPhrasesEnabled(enabled: boolean): void {
+    this.phrasesEnabled = enabled;
+  }
+
+  setPhraseInterval(seconds: number): void {
+    this.phraseInterval = seconds;
+  }
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
@@ -61,6 +91,7 @@ export class AutoVJ {
     this.energySmoothed = this.energySmoothed * 0.95 + audio.energy * 0.05;
     this.currentEnergy = classifyEnergy(this.energySmoothed);
 
+    this.lastBpm = audio.bpm;
     const nowSec = this.frameCount / 60;
     const profile = MOOD_PROFILES[this.currentEnergy];
 
@@ -68,6 +99,11 @@ export class AutoVJ {
     if (this.currentEnergy !== this.prevEnergyLevel) {
       this.onEnergyShift(nowSec);
       this.prevEnergyLevel = this.currentEnergy;
+    }
+
+    // Periodic phrase check (every 60s if nothing else fires)
+    if (nowSec - this.lastPhraseTime > 60) {
+      void this.maybeShowPhrase(nowSec, "periodic");
     }
 
     // Periodic param tweaks (every N seconds based on mood profile)
@@ -160,6 +196,14 @@ export class AutoVJ {
     this.state = "shifting";
     const profile = MOOD_PROFILES[this.currentEnergy];
 
+    // Trigger phrase on energy shift + prefetch for new energy level
+    void this.maybeShowPhrase(nowSec, "energyShift");
+    this.phraseGen?.prefetch(this.currentEnergy, {
+      bpm: this.lastBpm,
+      scene: this.currentScene,
+      vjState: this.state,
+    });
+
     // Adjust global params
     const intensity = randomInRange(...profile.intensityRange);
     const speed = randomInRange(...profile.speedRange);
@@ -205,6 +249,7 @@ export class AutoVJ {
       const newScene = pickRandom(candidates);
       this.switchToScene(newScene, nowSec);
     }
+    void this.maybeShowPhrase(nowSec, "drop");
     void set(ref(db, "ravespace/control/aiMode/lastAction"),
       `DROP → ${this.currentScene}`);
   }
@@ -232,11 +277,18 @@ export class AutoVJ {
     this.lastSceneSwitch = nowSec;
 
     void set(ref(db, "ravespace/control/activeScene"), sceneId);
+    void this.maybeShowPhrase(nowSec, "sceneSwitch");
 
     // Generate and push params for this scene
     const params = this.generateSceneParams(sceneId);
     if (params) {
       void set(ref(db, `ravespace/control/sceneParams/${sceneId}`), params);
+    }
+
+    // Generate and push band→param mappings
+    const mappings = this.generateBandMappings(sceneId);
+    if (mappings.length > 0) {
+      void set(ref(db, "ravespace/control/bandMappings"), mappings);
     }
   }
 
@@ -294,6 +346,50 @@ export class AutoVJ {
     }
 
     return params;
+  }
+
+  /**
+   * Generate random band→param mappings for a scene.
+   * Picks 1-3 number params, assigns random bands, amounts, and modes.
+   * Bass bands (0-3) are preferred for intensity-like params.
+   */
+  private generateBandMappings(sceneId: string): BandMapping[] {
+    const meta = REGISTRY_MAP[sceneId];
+    if (!meta) return [];
+
+    // Collect number params only
+    const numberParams = meta.params.filter(
+      (p): p is NumberParam => p.type === "number",
+    );
+    if (numberParams.length === 0) return [];
+
+    // Pick 1-3 params to modulate
+    const count = Math.min(
+      numberParams.length,
+      1 + Math.floor(Math.random() * 3),
+    );
+
+    // Shuffle and take first `count`
+    const shuffled = [...numberParams].sort(() => Math.random() - 0.5);
+    const selected = shuffled.slice(0, count);
+
+    const mappings: BandMapping[] = [];
+    for (const param of selected) {
+      const isIntensity = INTENSITY_PARAM_KEYS.test(param.key);
+      // Bass bands (0-3) for intensity params, mid/treble (4-14) for others
+      const bandIndex = isIntensity
+        ? Math.floor(Math.random() * 4) // bands 0-3 (sub-bass to bass)
+        : 4 + Math.floor(Math.random() * 11); // bands 4-14
+
+      mappings.push({
+        paramKey: param.key,
+        bandIndex,
+        amount: 0.2 + Math.random() * 0.6, // 0.2 - 0.8
+        mode: Math.random() < 0.6 ? "add" : "multiply",
+      });
+    }
+
+    return mappings;
   }
 
   // ─── Periodic Param Tweaking ────────────────────────────────
@@ -386,6 +482,50 @@ export class AutoVJ {
     if (Object.keys(updates).length > 0) {
       void update(ref(db, `ravespace/control/sceneParams/${this.currentScene}`), updates);
     }
+  }
+
+  // ─── Phrase Generation ──────────────────────────────────────
+
+  private async maybeShowPhrase(nowSec: number, _reason: string): Promise<void> {
+    if (!this.phrasesEnabled || !this.phraseGen) return;
+    if (nowSec - this.lastPhraseTime < this.phraseInterval) return;
+    if (this.calloutActive) return;
+
+    // Check if audience queue is backed up (>3 items) — let them through first
+    try {
+      const { get: fbGet } = await import("firebase/database");
+      const queueSnap = await fbGet(ref(db, "ravespace/callouts/queue"));
+      if (queueSnap.exists() && Object.keys(queueSnap.val()).length > 3) return;
+    } catch {
+      // Can't check queue — proceed anyway
+    }
+
+    this.lastPhraseTime = nowSec;
+
+    try {
+      const phrase = await this.phraseGen.getPhrase(this.currentEnergy, {
+        bpm: this.lastBpm,
+        scene: this.currentScene,
+        vjState: this.state,
+      });
+
+      void set(ref(db, "ravespace/callouts/active"), {
+        name: phrase,
+        startTime: Date.now(),
+        duration: 4,
+        source: "ai" as const,
+        animationStyle: pickRandomAnimation(),
+      });
+
+      void set(ref(db, "ravespace/control/aiMode/lastAction"),
+        `Phrase: "${phrase}"`);
+    } catch {
+      // Phrase generation failed — skip silently
+    }
+  }
+
+  dispose(): void {
+    this.calloutUnsub?.();
   }
 
   // ─── Overlay Compositing ────────────────────────────────────

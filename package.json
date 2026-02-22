@@ -13,6 +13,7 @@
     "post-deploy": "tsx scripts/post-deploy.ts"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.21.0",
     "firebase": "^11.0.0",
     "gl-transitions": "^1.43.0",
     "meyda": "^5.6.0",

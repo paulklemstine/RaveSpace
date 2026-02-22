@@ -1,3 +1,6 @@
+import type { PitchInfo } from "./bands";
+import { NUM_BANDS } from "./bands";
+
 export interface AudioFeatures {
   /** Overall volume level, 0.0 - 1.0 */
   energy: number;
@@ -19,7 +22,18 @@ export interface AudioFeatures {
   beatIntensity: number;
   /** Frame-to-frame spectral change (onset/transient detection), 0.0 - 1.0 */
   spectralFlux: number;
+  /** 16-band EQ levels, each 0.0 - 1.0 (AGC-normalized) */
+  bands: Float32Array;
+  /** Pitch detection result */
+  pitch: PitchInfo;
 }
+
+const SILENT_PITCH: PitchInfo = {
+  frequency: 0,
+  midiNote: 0,
+  noteName: "",
+  confidence: 0,
+};
 
 export const SILENT_AUDIO: AudioFeatures = {
   energy: 0,
@@ -32,4 +46,6 @@ export const SILENT_AUDIO: AudioFeatures = {
   kick: 0,
   beatIntensity: 0,
   spectralFlux: 0,
+  bands: new Float32Array(NUM_BANDS),
+  pitch: SILENT_PITCH,
 };

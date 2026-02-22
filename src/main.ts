@@ -18,6 +18,7 @@ import { VersionWatcher } from "./firebase/VersionWatcher";
 import { DiagnosticOverlay } from "./ui/DiagnosticOverlay";
 import { DropDetector } from "./audio/DropDetector";
 import { AutoVJ } from "./agent/AutoVJ";
+import { GeminiPhraseGen } from "./agent/GeminiPhraseGen";
 import { CalloutOverlay } from "./engine/CalloutOverlay";
 import { ref, onValue } from "firebase/database";
 import { db } from "./firebase/config";
@@ -132,10 +133,28 @@ async function boot() {
   // AutoVJ agent: AI-driven scene/param control
   const autoVJ = new AutoVJ();
 
+  // Gemini phrase generation for AI callouts
+  const geminiKey = import.meta.env.VITE_GEMINI_API_KEY as string | undefined;
+  if (geminiKey) {
+    const phraseGen = new GeminiPhraseGen(geminiKey);
+    autoVJ.setPhraseGen(phraseGen);
+  }
+
   // Listen for AI mode toggle from control panel
   onValue(ref(db, "ravespace/control/aiMode"), (snapshot) => {
     const data = snapshot.val() as { enabled?: boolean } | null;
     autoVJ.setEnabled(data?.enabled === true);
+  });
+
+  // Listen for callout settings (AI phrases toggle + interval)
+  onValue(ref(db, "ravespace/callouts/settings"), (snapshot) => {
+    const data = snapshot.val();
+    if (data) {
+      autoVJ.setPhrasesEnabled(data.aiPhrasesEnabled === true);
+      if (data.aiPhraseInterval) {
+        autoVJ.setPhraseInterval(data.aiPhraseInterval);
+      }
+    }
   });
 
   // Drop detector: triggers dopamine effects on beat drops + feeds AutoVJ
