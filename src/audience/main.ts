@@ -1,9 +1,33 @@
 import "../index.css";
 import { ref, push } from "firebase/database";
 import { db } from "../firebase/config";
+import { VersionWatcher } from "../firebase/VersionWatcher";
 
 const COOLDOWN_KEY = "ravespace_callout_last";
 const COOLDOWN_MS = 60_000; // 1 minute between submissions
+const STORAGE_AUTO_UPDATE = "ravespace_audience_update";
+
+function applyFadeIn(): void {
+  if (sessionStorage.getItem(STORAGE_AUTO_UPDATE) === "true") {
+    sessionStorage.removeItem(STORAGE_AUTO_UPDATE);
+    document.body.style.opacity = "0";
+    document.body.style.transition = "opacity 300ms ease-in";
+    requestAnimationFrame(() => {
+      document.body.style.opacity = "1";
+    });
+  }
+}
+
+function fadeOutAndReload(): void {
+  document.body.style.transition = "opacity 300ms ease-out";
+  document.body.style.opacity = "0";
+  setTimeout(() => {
+    sessionStorage.setItem(STORAGE_AUTO_UPDATE, "true");
+    window.location.reload();
+  }, 300);
+}
+
+applyFadeIn();
 
 function init() {
   const root = document.getElementById("audience-root")!;
@@ -91,3 +115,9 @@ function init() {
 }
 
 init();
+
+const versionWatcher = new VersionWatcher();
+versionWatcher.start((version) => {
+  console.log(`New version detected: ${version}, reloading audience page...`);
+  fadeOutAndReload();
+});

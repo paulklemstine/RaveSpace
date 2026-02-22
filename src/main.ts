@@ -17,9 +17,74 @@ import { CalloutOverlay } from "./engine/CalloutOverlay";
 import { ref, onValue } from "firebase/database";
 import { db } from "./firebase/config";
 
+const STORAGE_FROZEN_FRAME = "ravespace_frozen_frame";
+const STORAGE_AUTO_UPDATE = "ravespace_auto_update";
+
+function isAutoUpdate(): boolean {
+  return sessionStorage.getItem(STORAGE_AUTO_UPDATE) === "true";
+}
+
+function clearAutoUpdateFlags(): void {
+  sessionStorage.removeItem(STORAGE_AUTO_UPDATE);
+}
+
+/** Create a fullscreen overlay showing the frozen frame from the previous session */
+function showFrozenFrameOverlay(): HTMLDivElement | null {
+  const frameData = sessionStorage.getItem(STORAGE_FROZEN_FRAME);
+  if (!frameData) return null;
+
+  const overlay = document.createElement("div");
+  overlay.style.cssText =
+    "position:fixed;top:0;left:0;width:100%;height:100%;z-index:9999;background:#000;transition:opacity 1.5s ease-in-out;";
+
+  const img = document.createElement("img");
+  img.src = frameData;
+  img.style.cssText = "width:100%;height:100%;object-fit:cover;";
+  overlay.appendChild(img);
+
+  document.body.appendChild(overlay);
+  return overlay;
+}
+
+/** Fade out and remove the frozen frame overlay */
+function fadeOutOverlay(overlay: HTMLDivElement): void {
+  overlay.style.opacity = "0";
+  overlay.addEventListener("transitionend", () => {
+    overlay.remove();
+    sessionStorage.removeItem(STORAGE_FROZEN_FRAME);
+  });
+}
+
+/** Capture the current canvas frame, store it, and reload */
+function captureAndReload(): void {
+  const canvas = document.getElementById("canvas") as HTMLCanvasElement | null;
+  if (canvas) {
+    try {
+      const frameData = canvas.toDataURL("image/png");
+      sessionStorage.setItem(STORAGE_FROZEN_FRAME, frameData);
+    } catch {
+      // Canvas tainted or too large — reload without frozen frame
+    }
+  }
+  sessionStorage.setItem(STORAGE_AUTO_UPDATE, "true");
+  window.location.reload();
+}
+
 async function boot() {
-  // User click on start screen satisfies AudioContext gesture requirement
-  await showStartScreen();
+  const autoUpdate = isAutoUpdate();
+  clearAutoUpdateFlags();
+
+  let frozenOverlay: HTMLDivElement | null = null;
+
+  if (autoUpdate) {
+    // Show the frozen frame immediately while we boot behind it
+    frozenOverlay = showFrozenFrameOverlay();
+    // Skip the start screen — audio context can resume without gesture
+    // since the original gesture is still active in this browsing session
+  } else {
+    // Normal first load: user click satisfies AudioContext gesture requirement
+    await showStartScreen();
+  }
 
   const canvas = document.getElementById("canvas") as HTMLCanvasElement;
   const renderer = new Renderer(canvas);
@@ -38,6 +103,13 @@ async function boot() {
   // Default scene
   renderer.setSceneByName("plasma", sceneManager);
   renderer.start();
+
+  // If auto-updating, wait one frame then crossfade from frozen overlay
+  if (frozenOverlay) {
+    requestAnimationFrame(() => {
+      fadeOutOverlay(frozenOverlay!);
+    });
+  }
 
   // Telemetry: publish audio features to RTDB at 5Hz
   const telemetry = new TelemetryPublisher(audio, renderer);
@@ -84,11 +156,11 @@ async function boot() {
   // Diagnostic overlay: toggle with D key
   new DiagnosticOverlay(renderer, audio);
 
-  // Version watcher: auto-reload on deploy
+  // Version watcher: capture frame + seamless reload on deploy
   const versionWatcher = new VersionWatcher();
   versionWatcher.start((version) => {
-    console.log(`New version detected: ${version}, reloading...`);
-    setTimeout(() => window.location.reload(), 500);
+    console.log(`New version detected: ${version}, capturing frame and reloading...`);
+    captureAndReload();
   });
 }
 
