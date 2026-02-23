@@ -174,6 +174,10 @@ async function boot() {
     await showStartScreen();
   }
 
+  // Solo mode: skip PeerHost/pairing for controllerless AutoVJ
+  const solo = new URLSearchParams(window.location.search).has("solo");
+  if (solo) console.log("[RaveSpace] Solo mode — AutoVJ running");
+
   const canvas = document.getElementById("canvas") as HTMLCanvasElement;
   const renderer = new Renderer(canvas);
 
@@ -422,97 +426,99 @@ async function boot() {
     autoVJ.setCalloutQueueSize(queue.length);
   }
 
-  // ─── PeerHost setup ────────────────────────────────────────
+  // ─── PeerHost setup (skipped in solo mode) ─────────────────
 
   let pairingOverlay: { hide: () => void } | null = null;
+  let host!: PeerHost;
 
-  const host = new PeerHost({
-    onControlMessage: handleControlMessage,
-    onAudienceMessage: handleAudienceMessage,
-    onControllerConnected: () => {
-      if (pairingOverlay) {
-        pairingOverlay.hide();
-        pairingOverlay = null;
-      }
-      return buildFullState();
-    },
-    onControllerDisconnected: () => {
-      // Could show pairing code again, but for now just log
-      console.log("[PeerHost] Controller disconnected");
-    },
-    onCodeReady: (code) => {
-      pairingOverlay = showPairingCode(code);
-      console.log(`[PeerHost] Pairing code: ${code}`);
-    },
-  });
-
-  host.start();
-
-  // ─── Telemetry broadcast (5Hz) ─────────────────────────────
-
-  let lastAiAction = "";
-
-  setInterval(() => {
-    const features = audio.getFeatures();
-
-    function safe(v: number): number {
-      return Number.isFinite(v) ? v : 0;
-    }
-
-    const audioTelemetry: AudioTelemetry = {
-      energy: safe(Math.round(features.energy * 1000) / 1000),
-      bass: safe(Math.round(features.bass * 1000) / 1000),
-      mid: safe(Math.round(features.mid * 1000) / 1000),
-      treble: safe(Math.round(features.treble * 1000) / 1000),
-      spectralCentroid: safe(Math.round(features.spectralCentroid * 1000) / 1000),
-      beat: features.beat,
-      bpm: safe(Math.round(features.bpm)),
-      kick: safe(Math.round(features.kick * 1000) / 1000),
-      beatIntensity: safe(Math.round(features.beatIntensity * 1000) / 1000),
-      spectralFlux: safe(Math.round(features.spectralFlux * 1000) / 1000),
-    };
-
-    // Send telemetry to controller
-    host.sendToController({
-      type: "telemetry",
-      audio: audioTelemetry,
-      display: {
-        connected: true,
-        scene: renderer.getActiveSceneName() ?? "unknown",
-        fps: 60,
+  if (!solo) {
+    host = new PeerHost({
+      onControlMessage: handleControlMessage,
+      onAudienceMessage: handleAudienceMessage,
+      onControllerConnected: () => {
+        if (pairingOverlay) {
+          pairingOverlay.hide();
+          pairingOverlay = null;
+        }
+        return buildFullState();
+      },
+      onControllerDisconnected: () => {
+        console.log("[PeerHost] Controller disconnected");
+      },
+      onCodeReady: (code) => {
+        pairingOverlay = showPairingCode(code);
+        console.log(`[PeerHost] Pairing code: ${code}`);
       },
     });
 
-    // Send telemetry to audience
-    host.broadcastToAudience({
-      type: "telemetry",
-      audio: audioTelemetry,
-      crowdEnergy: crowdOverlay.getEnergy(),
-      connectedCount: host.getAudienceCount(),
-      bpm: audioTelemetry.bpm,
-    });
+    host.start();
 
-    // Update crowd connected count
-    crowdOverlay.setConnectedCount(host.getAudienceCount());
+    // ─── Telemetry broadcast (5Hz) ───────────────────────────
 
-    // Track AI action changes
-    const currentAction = autoVJ.getLastAction();
-    if (currentAction !== lastAiAction) {
-      lastAiAction = currentAction;
-      host.sendToController({ type: "aiAction", action: currentAction });
-    }
+    let lastAiAction = "";
 
-    // Send crowd update to controller
-    host.sendToController({
-      type: "crowdUpdate",
-      energy: crowdOverlay.getEnergy(),
-      connectedCount: host.getAudienceCount(),
-      dominantHue: crowdOverlay.getDominantHue(),
-    });
+    setInterval(() => {
+      const features = audio.getFeatures();
 
-    // Track callout active state for AutoVJ
-    autoVJ.setCalloutActive(calloutOverlay.getQueue().length > 0);
-  }, TELEMETRY_INTERVAL_MS);
+      function safe(v: number): number {
+        return Number.isFinite(v) ? v : 0;
+      }
+
+      const audioTelemetry: AudioTelemetry = {
+        energy: safe(Math.round(features.energy * 1000) / 1000),
+        bass: safe(Math.round(features.bass * 1000) / 1000),
+        mid: safe(Math.round(features.mid * 1000) / 1000),
+        treble: safe(Math.round(features.treble * 1000) / 1000),
+        spectralCentroid: safe(Math.round(features.spectralCentroid * 1000) / 1000),
+        beat: features.beat,
+        bpm: safe(Math.round(features.bpm)),
+        kick: safe(Math.round(features.kick * 1000) / 1000),
+        beatIntensity: safe(Math.round(features.beatIntensity * 1000) / 1000),
+        spectralFlux: safe(Math.round(features.spectralFlux * 1000) / 1000),
+      };
+
+      // Send telemetry to controller
+      host.sendToController({
+        type: "telemetry",
+        audio: audioTelemetry,
+        display: {
+          connected: true,
+          scene: renderer.getActiveSceneName() ?? "unknown",
+          fps: 60,
+        },
+      });
+
+      // Send telemetry to audience
+      host.broadcastToAudience({
+        type: "telemetry",
+        audio: audioTelemetry,
+        crowdEnergy: crowdOverlay.getEnergy(),
+        connectedCount: host.getAudienceCount(),
+        bpm: audioTelemetry.bpm,
+      });
+
+      // Update crowd connected count
+      crowdOverlay.setConnectedCount(host.getAudienceCount());
+
+      // Track AI action changes
+      const currentAction = autoVJ.getLastAction();
+      if (currentAction !== lastAiAction) {
+        lastAiAction = currentAction;
+        host.sendToController({ type: "aiAction", action: currentAction });
+      }
+
+      // Send crowd update to controller
+      host.sendToController({
+        type: "crowdUpdate",
+        energy: crowdOverlay.getEnergy(),
+        connectedCount: host.getAudienceCount(),
+        dominantHue: crowdOverlay.getDominantHue(),
+      });
+
+      // Track callout active state for AutoVJ
+      autoVJ.setCalloutActive(calloutOverlay.getQueue().length > 0);
+    }, TELEMETRY_INTERVAL_MS);
+  }
 
   // ─── Version polling: capture frame + seamless reload ──────
 
