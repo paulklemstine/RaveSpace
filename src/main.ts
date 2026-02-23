@@ -168,14 +168,16 @@ async function boot() {
 
   let frozenOverlay: HTMLDivElement | null = null;
 
+  let startSolo = false;
   if (autoUpdate) {
     frozenOverlay = showFrozenFrameOverlay();
   } else {
-    await showStartScreen();
+    const result = await showStartScreen();
+    startSolo = result.solo;
   }
 
   // Solo mode: skip PeerHost/pairing for controllerless AutoVJ
-  const solo = new URLSearchParams(window.location.search).has("solo");
+  const solo = startSolo || new URLSearchParams(window.location.search).has("solo");
   if (solo) console.log("[RaveSpace] Solo mode — AutoVJ running");
 
   const canvas = document.getElementById("canvas") as HTMLCanvasElement;

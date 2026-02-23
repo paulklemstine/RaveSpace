@@ -1,4 +1,4 @@
-export function showStartScreen(): Promise<void> {
+export function showStartScreen(): Promise<{ solo: boolean }> {
   return new Promise((resolve) => {
     const root = document.getElementById("ui-root")!;
 
@@ -11,23 +11,31 @@ export function showStartScreen(): Promise<void> {
     title.className =
       "text-6xl font-bold text-white tracking-[0.3em] mb-12 select-none";
 
-    const button = document.createElement("button");
-    button.textContent = "Start Show";
-    button.className =
-      "px-8 py-4 text-lg font-semibold text-black bg-white rounded-full hover:bg-gray-200 transition-colors cursor-pointer";
-
-    button.addEventListener("click", async () => {
+    async function launch(solo: boolean) {
       try {
         await document.documentElement.requestFullscreen();
       } catch {
         // Fullscreen denied — continue anyway
       }
       root.removeChild(overlay);
-      resolve();
-    });
+      resolve({ solo });
+    }
+
+    const startBtn = document.createElement("button");
+    startBtn.textContent = "Start Show";
+    startBtn.className =
+      "px-8 py-4 text-lg font-semibold text-black bg-white rounded-full hover:bg-gray-200 transition-colors cursor-pointer";
+    startBtn.addEventListener("click", () => launch(false));
+
+    const soloBtn = document.createElement("button");
+    soloBtn.textContent = "Solo Mode";
+    soloBtn.className =
+      "mt-4 px-8 py-3 text-base font-semibold text-white border border-white/40 rounded-full hover:bg-white/10 transition-colors cursor-pointer";
+    soloBtn.addEventListener("click", () => launch(true));
 
     overlay.appendChild(title);
-    overlay.appendChild(button);
+    overlay.appendChild(startBtn);
+    overlay.appendChild(soloBtn);
     root.appendChild(overlay);
   });
 }
