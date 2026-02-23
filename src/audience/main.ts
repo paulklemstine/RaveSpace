@@ -1,7 +1,7 @@
 import "../index.css";
-import { ref, push, set, onValue, onDisconnect } from "firebase/database";
-import { db } from "../firebase/config";
-import { VersionWatcher } from "../firebase/VersionWatcher";
+import { PeerClient } from "../comms/PeerClient";
+import type { AudienceMessage, AudienceResponse } from "../comms/messages";
+import { VersionPoller } from "../comms/VersionPoller";
 
 // ─── Constants ──────────────────────────────────────────────
 
@@ -13,9 +13,9 @@ const DEVICE_ID = getOrCreateDeviceId();
 
 const EMOJIS = ["🔥", "⚡", "💀", "👽", "❤️‍🔥", "✨", "💥", "🎵"] as const;
 
-// ─── Audio Telemetry ─────────────────────────────────────────
+// ─── Audio Telemetry (received from display) ────────────────
 
-interface AudioTelemetry {
+interface ReceivedTelemetry {
   energy: number;
   bass: number;
   mid: number;
@@ -24,10 +24,11 @@ interface AudioTelemetry {
   bpm: number;
   kick: number;
   beatIntensity: number;
-  timestamp: number;
+  crowdEnergy: number;
+  connectedCount: number;
 }
 
-let audioTelemetry: AudioTelemetry | null = null;
+let audioTelemetry: ReceivedTelemetry | null = null;
 let lastBeatState = false;
 
 // Emoji combo tracking
@@ -55,6 +56,14 @@ const TABS: { id: TabId; icon: string; label: string }[] = [
   { id: "colors", icon: "🎨", label: "COLORS" },
   { id: "shoutout", icon: "📣", label: "SHOUT" },
 ];
+
+// ─── PeerClient reference ────────────────────────────────────
+
+let client: PeerClient<AudienceMessage, AudienceResponse> | null = null;
+
+function sendMsg(msg: AudienceMessage): void {
+  client?.send(msg);
+}
 
 // ─── Utilities ──────────────────────────────────────────────
 
@@ -194,49 +203,9 @@ function injectStyles(): void {
   document.head.appendChild(style);
 }
 
-// ─── Firebase Helpers ───────────────────────────────────────
-
-const presenceRef = ref(db, `ravespace/crowd/connected/${DEVICE_ID}`);
-
-function registerPresence(): void {
-  void set(presenceRef, { ts: Date.now() });
-  onDisconnect(presenceRef).remove();
-  // Heartbeat every 15s
-  setInterval(() => void set(presenceRef, { ts: Date.now() }), 15_000);
-}
-
-function sendTapRate(rate: number): void {
-  void set(ref(db, `ravespace/crowd/taps/${DEVICE_ID}`), {
-    rate,
-    ts: Date.now(),
-  });
-}
-
-function sendReaction(emoji: string, size: number = 1): void {
-  void push(ref(db, "ravespace/crowd/reactions"), {
-    emoji,
-    size,
-    ts: Date.now(),
-  });
-}
-
-function sendColor(hue: number): void {
-  void set(ref(db, `ravespace/crowd/colors/${DEVICE_ID}`), {
-    hue,
-    ts: Date.now(),
-  });
-}
-
-function sendShoutout(name: string): void {
-  void push(ref(db, "ravespace/callouts/queue"), {
-    name,
-    timestamp: Date.now(),
-  });
-}
-
 // ─── Join Screen ────────────────────────────────────────────
 
-function buildJoinScreen(root: HTMLElement, onJoin: () => void): void {
+function buildJoinScreen(root: HTMLElement, onJoin: (code: string) => void): void {
   const container = h("div", "flex flex-col items-center justify-center min-h-screen p-6 gradient-bg");
 
   const title = h("h1", "text-4xl font-black tracking-[0.25em] mb-2");
@@ -251,8 +220,22 @@ function buildJoinScreen(root: HTMLElement, onJoin: () => void): void {
   title.textContent = "RAVESPACE";
   container.appendChild(title);
 
-  const sub = h("p", "text-gray-400 text-sm mb-12 tracking-wider", "LIVE VISUAL EXPERIENCE");
+  const sub = h("p", "text-gray-400 text-sm mb-8 tracking-wider", "LIVE VISUAL EXPERIENCE");
   container.appendChild(sub);
+
+  // Code entry
+  const codeLabel = h("p", "text-gray-400 text-sm mb-2 tracking-wider", "ENTER DISPLAY CODE");
+  container.appendChild(codeLabel);
+
+  const codeInput = document.createElement("input");
+  codeInput.type = "text";
+  codeInput.maxLength = 4;
+  codeInput.pattern = "[0-9]{4}";
+  codeInput.inputMode = "numeric";
+  codeInput.placeholder = "0000";
+  codeInput.className = "text-center text-3xl font-bold tracking-[0.5em] bg-transparent rounded-xl px-6 py-3 text-white w-40 focus:outline-none mb-4";
+  codeInput.style.cssText += "border: 2px solid rgba(0,255,255,0.3);";
+  container.appendChild(codeInput);
 
   const btn = h("button", "px-12 py-5 rounded-full text-xl font-bold cursor-pointer");
   btn.style.cssText = `
@@ -265,19 +248,33 @@ function buildJoinScreen(root: HTMLElement, onJoin: () => void): void {
     -webkit-tap-highlight-color: transparent;
   `;
   btn.textContent = "JOIN THE SHOW";
-  btn.addEventListener("click", () => {
+
+  const errorEl = h("p", "text-red-400 text-sm min-h-[1.5em] mt-2");
+  container.appendChild(errorEl);
+
+  const doJoin = () => {
+    const code = codeInput.value.trim();
+    if (code.length !== 4 || !/^\d{4}$/.test(code)) {
+      errorEl.textContent = "Enter a 4-digit code";
+      return;
+    }
     haptic(50);
     // Request motion permission on iOS
     const dme = DeviceMotionEvent as unknown as { requestPermission?: () => Promise<string> };
     if (dme.requestPermission) {
-      void dme.requestPermission().then(() => onJoin()).catch(() => onJoin());
+      void dme.requestPermission().then(() => onJoin(code)).catch(() => onJoin(code));
     } else {
-      onJoin();
+      onJoin(code);
     }
+  };
+
+  btn.addEventListener("click", doJoin);
+  codeInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doJoin();
   });
   container.appendChild(btn);
 
-  const hint = h("p", "text-gray-600 text-xs mt-8", "Tap to join the crowd");
+  const hint = h("p", "text-gray-600 text-xs mt-8", "Enter the code shown on the display");
   container.appendChild(hint);
 
   root.appendChild(container);
@@ -290,6 +287,8 @@ function buildEnergyTab(): {
   startTapTracking: () => void;
   audioBars: { bass: HTMLElement; mid: HTMLElement; treble: HTMLElement };
   tapBtn: HTMLElement;
+  crowdBarInner: HTMLElement;
+  crowdBarLabel: HTMLElement;
 } {
   const panel = h("div", "tab-panel flex-col items-center justify-center gap-6 px-4 py-6");
 
@@ -310,7 +309,7 @@ function buildEnergyTab(): {
   btn.appendChild(btnText);
   btnWrap.appendChild(btn);
 
-  // Ripple container (behind button)
+  // Ripple container
   const rippleContainer = h("div", "absolute inset-0 pointer-events-none flex items-center justify-center");
   btnWrap.insertBefore(rippleContainer, btn);
   panel.appendChild(btnWrap);
@@ -340,7 +339,7 @@ function buildEnergyTab(): {
   barWrap.appendChild(barOuter);
   panel.appendChild(barWrap);
 
-  // Audio spectrum bars (updated by telemetry from the display app)
+  // Audio spectrum bars
   const spectrumWrap = h("div", "w-full max-w-xs mt-4");
   const spectrumLabel = h("p", "text-xs text-gray-500 mb-2 tracking-widest", "AUDIO SPECTRUM");
   spectrumWrap.appendChild(spectrumLabel);
@@ -379,13 +378,11 @@ function buildEnergyTab(): {
     tapCount++;
     haptic(15);
 
-    // Visual feedback
     counterVal.textContent = String(tapCount);
     counterVal.classList.remove("counter-pop");
-    void counterVal.offsetWidth; // force reflow
+    void counterVal.offsetWidth;
     counterVal.classList.add("counter-pop");
 
-    // Ripple
     const ripple = h("div", "absolute rounded-full pointer-events-none");
     ripple.style.cssText = `
       width: 180px; height: 180px;
@@ -413,14 +410,13 @@ function buildEnergyTab(): {
   btn.addEventListener("pointerleave", stopTap);
   btn.addEventListener("pointercancel", stopTap);
 
-  // Report tap rate to Firebase periodically
   function startTapTracking(): void {
     let lastLocalTaps = 0;
     setInterval(() => {
       const delta = localTaps - lastLocalTaps;
       lastLocalTaps = localTaps;
       const rate = delta / (TAP_REPORT_MS / 1000);
-      sendTapRate(rate);
+      sendMsg({ type: "tapRate", rate });
     }, TAP_REPORT_MS);
 
     // Shake detection
@@ -428,29 +424,11 @@ function buildEnergyTab(): {
       const a = e.accelerationIncludingGravity;
       if (!a) return;
       const mag = Math.sqrt((a.x ?? 0) ** 2 + (a.y ?? 0) ** 2 + (a.z ?? 0) ** 2);
-      if (mag > 25) doTap(); // strong shake
-    });
-
-    // Listen to crowd energy
-    onValue(ref(db, "ravespace/crowd/taps"), (snap) => {
-      const data = snap.val() as Record<string, { rate: number; ts: number }> | null;
-      if (!data) {
-        barLabelR.textContent = "0%";
-        barInner.style.width = "0%";
-        return;
-      }
-      const now = Date.now();
-      let total = 0;
-      for (const entry of Object.values(data)) {
-        if (now - entry.ts < 5000) total += entry.rate;
-      }
-      const pct = Math.min(100, Math.round(total / 40 * 100)); // 40 taps/sec = 100%
-      barLabelR.textContent = `${pct}%`;
-      barInner.style.width = `${pct}%`;
+      if (mag > 25) doTap();
     });
   }
 
-  return { panel, startTapTracking, audioBars: { bass: bassBar, mid: midBar, treble: trebleBar }, tapBtn: btn };
+  return { panel, startTapTracking, audioBars: { bass: bassBar, mid: midBar, treble: trebleBar }, tapBtn: btn, crowdBarInner: barInner, crowdBarLabel: barLabelR };
 }
 
 // ─── React Tab ──────────────────────────────────────────────
@@ -475,7 +453,6 @@ function buildReactTab(): HTMLElement {
     `;
     btn.textContent = emoji;
 
-    // Hold-for-size tracking
     let holdStart = 0;
 
     btn.addEventListener("pointerdown", (e) => {
@@ -488,7 +465,6 @@ function buildReactTab(): HTMLElement {
       if (now - lastReaction < REACTION_COOLDOWN_MS) return;
       lastReaction = now;
 
-      // Determine size from hold duration
       const duration = now - holdStart;
       const size = duration >= 500 ? 3 : duration >= 200 ? 2 : 1;
 
@@ -508,14 +484,12 @@ function buildReactTab(): HTMLElement {
         comboTimer = null;
       }, COMBO_WINDOW_MS);
 
-      sendReaction(emoji, size);
+      sendMsg({ type: "reaction", emoji, size });
 
-      // Button press animation
       btn.style.animation = "none";
       void btn.offsetWidth;
       btn.style.animation = "btn-press 0.15s ease";
 
-      // Flash feedback — show combo count or "SENT!"
       let feedbackText = size > 1 ? `SENT x${size}!` : "SENT!";
       if (comboCount > 1) feedbackText = `x${comboCount} COMBO!`;
 
@@ -526,7 +500,6 @@ function buildReactTab(): HTMLElement {
       btn.appendChild(flash);
       setTimeout(() => flash.remove(), 400);
 
-      // Beat sync bonus — "PERFECT TIMING" if sending on a beat
       if (audioTelemetry?.beat) {
         const perfect = h("span", "absolute text-[10px] font-bold pointer-events-none", "⚡ PERFECT TIMING");
         perfect.style.cssText = `animation: perfect-timing 0.6s ease forwards; color: #ffff00; white-space: nowrap; top: -18px; left: 50%; transform: translateX(-50%);`;
@@ -536,7 +509,7 @@ function buildReactTab(): HTMLElement {
     };
 
     btn.addEventListener("pointerup", doSend);
-    btn.addEventListener("click", (e) => e.preventDefault()); // avoid double-fire
+    btn.addEventListener("click", (e) => e.preventDefault());
     grid.appendChild(btn);
   }
 
@@ -575,14 +548,13 @@ function buildColorsTab(): HTMLElement {
       selectedSwatch?.classList.remove("selected");
       swatch.classList.add("selected");
       selectedSwatch = swatch;
-      sendColor(color.hue);
+      sendMsg({ type: "color", hue: color.hue });
     });
     grid.appendChild(swatch);
   }
 
   panel.appendChild(grid);
 
-  // Show crowd color distribution (optional future: live bar chart)
   const hint = h("p", "text-gray-600 text-xs mt-2", "Your choice shifts the visuals for everyone!");
   panel.appendChild(hint);
 
@@ -652,7 +624,7 @@ function buildShoutoutTab(): HTMLElement {
     }
 
     haptic(30);
-    sendShoutout(name);
+    sendMsg({ type: "shoutout", name });
     localStorage.setItem(COOLDOWN_KEY, String(Date.now()));
     input.value = "";
     status.textContent = "Sent! Watch the screen! ✨";
@@ -728,8 +700,6 @@ function buildNav(panels: Map<TabId, HTMLElement>, container: HTMLElement): void
   }
 
   container.appendChild(nav);
-
-  // Activate default tab
   switchTab(activeTab);
 }
 
@@ -764,19 +734,12 @@ function buildMainUI(root: HTMLElement): void {
   header.appendChild(bpmBadge);
   root.appendChild(header);
 
-  // Listen for connected count
-  onValue(ref(db, "ravespace/crowd/connected"), (snap) => {
-    const data = snap.val() as Record<string, unknown> | null;
-    const count = data ? Object.keys(data).length : 0;
-    crowdCount.textContent = count > 0 ? `👥 ${count}` : "";
-  });
-
   // Main content area
   const main = h("div", "flex-1 flex flex-col items-center justify-center overflow-y-auto");
-  main.style.paddingBottom = "72px"; // nav height
+  main.style.paddingBottom = "72px";
 
   // Build tabs
-  const { panel: energyPanel, startTapTracking, audioBars, tapBtn } = buildEnergyTab();
+  const { panel: energyPanel, startTapTracking, audioBars, tapBtn, crowdBarInner, crowdBarLabel } = buildEnergyTab();
   const reactPanel = buildReactTab();
   const colorsPanel = buildColorsTab();
   const shoutoutPanel = buildShoutoutTab();
@@ -797,51 +760,72 @@ function buildMainUI(root: HTMLElement): void {
   buildNav(panels, root);
 
   // Start systems
-  registerPresence();
   startTapTracking();
 
-  // ─── Audio Telemetry Listener ─────────────────────────────
-  // Subscribe to the display app's audio telemetry at 5Hz
+  // Beat haptic toggle
   let beatHapticEnabled = false;
 
-  onValue(ref(db, "ravespace/telemetry/audio"), (snap) => {
-    const data = snap.val() as AudioTelemetry | null;
-    if (!data) return;
-    audioTelemetry = data;
+  // Handle incoming messages from display
+  const handleMessage = (msg: AudienceResponse) => {
+    if (msg.type === "telemetry") {
+      audioTelemetry = {
+        energy: msg.audio.energy,
+        bass: msg.audio.bass,
+        mid: msg.audio.mid,
+        treble: msg.audio.treble,
+        beat: msg.audio.beat,
+        bpm: msg.audio.bpm,
+        kick: msg.audio.kick,
+        beatIntensity: msg.audio.beatIntensity,
+        crowdEnergy: msg.crowdEnergy,
+        connectedCount: msg.connectedCount,
+      };
 
-    // BPM badge
-    if (data.bpm > 0) {
-      bpmBadge.textContent = `💓 ${data.bpm} BPM`;
-      bpmBadge.style.display = "";
-    } else {
-      bpmBadge.style.display = "none";
+      // BPM badge
+      if (msg.bpm > 0) {
+        bpmBadge.textContent = `💓 ${msg.bpm} BPM`;
+        bpmBadge.style.display = "";
+      } else {
+        bpmBadge.style.display = "none";
+      }
+
+      // Audio spectrum bars
+      audioBars.bass.style.width = `${Math.min(100, msg.audio.bass * 100)}%`;
+      audioBars.mid.style.width = `${Math.min(100, msg.audio.mid * 100)}%`;
+      audioBars.treble.style.width = `${Math.min(100, msg.audio.treble * 100)}%`;
+
+      // Crowd energy bar
+      const pct = Math.min(100, Math.round(msg.crowdEnergy * 100));
+      crowdBarLabel.textContent = `${pct}%`;
+      crowdBarInner.style.width = `${pct}%`;
+
+      // Connected count
+      crowdCount.textContent = msg.connectedCount > 0 ? `👥 ${msg.connectedCount}` : "";
+
+      // Beat flash
+      if (msg.audio.beat && !lastBeatState) {
+        root.classList.remove("beat-flash");
+        void root.offsetWidth;
+        root.classList.add("beat-flash");
+        if (beatHapticEnabled) haptic(10);
+      }
+      lastBeatState = msg.audio.beat;
+
+      // Kick pulse on tap button
+      if (msg.audio.kick > 0.5) {
+        tapBtn.style.transform = `scale(${1 + msg.audio.kick * 0.08})`;
+      } else {
+        tapBtn.style.transform = "";
+      }
+    } else if (msg.type === "shoutoutAck") {
+      // Feedback is handled by the shoutout tab's local UI
     }
+  };
 
-    // Audio spectrum bars
-    audioBars.bass.style.width = `${Math.min(100, data.bass * 100)}%`;
-    audioBars.mid.style.width = `${Math.min(100, data.mid * 100)}%`;
-    audioBars.treble.style.width = `${Math.min(100, data.treble * 100)}%`;
+  // Store handler for use by PeerClient callback
+  (window as unknown as Record<string, unknown>).__ravespace_audience_handler = handleMessage;
 
-    // Beat flash — rising edge only (false → true)
-    if (data.beat && !lastBeatState) {
-      root.classList.remove("beat-flash");
-      void root.offsetWidth;
-      root.classList.add("beat-flash");
-
-      // Beat-synced haptic (opt-in)
-      if (beatHapticEnabled) haptic(10);
-    }
-    lastBeatState = data.beat;
-
-    // Kick pulse on tap button
-    if (data.kick > 0.5) {
-      tapBtn.style.transform = `scale(${1 + data.kick * 0.08})`;
-    } else {
-      tapBtn.style.transform = "";
-    }
-  });
-
-  // Beat haptic toggle (small toggle in header area)
+  // Beat haptic toggle
   const hapticToggle = h("button", "text-[10px] text-gray-600 px-1.5 py-0.5 rounded cursor-pointer bg-transparent border-none");
   hapticToggle.textContent = "🔇 haptic";
   hapticToggle.style.cssText += "border: 1px solid rgba(255,255,255,0.1); -webkit-tap-highlight-color: transparent;";
@@ -882,20 +866,47 @@ function boot(): void {
 
   const root = document.getElementById("audience-root")!;
 
-  // If returning from auto-update, skip join screen
-  if (localStorage.getItem("ravespace_joined") === "true") {
-    buildMainUI(root);
-  } else {
-    buildJoinScreen(root, () => {
-      localStorage.setItem("ravespace_joined", "true");
-      root.innerHTML = "";
-      buildMainUI(root);
-    });
-  }
+  buildJoinScreen(root, (code) => {
+    // Clear join screen
+    root.innerHTML = "";
 
-  // Version watcher for seamless updates
-  const versionWatcher = new VersionWatcher();
-  versionWatcher.start((version) => {
+    // Show connecting status
+    const connecting = h("div", "flex items-center justify-center min-h-screen gradient-bg");
+    const connectText = h("p", "text-gray-400 text-sm tracking-wider", "Connecting...");
+    connecting.appendChild(connectText);
+    root.appendChild(connecting);
+
+    client = new PeerClient<AudienceMessage, AudienceResponse>("audience", {
+      onConnected() {
+        root.innerHTML = "";
+        buildMainUI(root);
+      },
+      onMessage(msg) {
+        const handler = (window as unknown as Record<string, unknown>).__ravespace_audience_handler as
+          ((msg: AudienceResponse) => void) | undefined;
+        handler?.(msg);
+      },
+      onDisconnected() {
+        // Show disconnect banner
+        const banner = document.createElement("div");
+        banner.className = "fixed top-0 left-0 right-0 py-2 text-center text-sm font-bold bg-red-900/80 text-red-200 z-50";
+        banner.textContent = "Disconnected from display";
+        document.body.appendChild(banner);
+      },
+      onError(err) {
+        connectText.textContent = err.type === "peer-unavailable"
+          ? "Code not found — is the display running?"
+          : `Error: ${err.message}`;
+        connectText.style.color = "#ff4444";
+      },
+    }, DEVICE_ID);
+
+    client.connect(code);
+  });
+
+  // Version poller for seamless updates
+  const versionPoller = new VersionPoller();
+  versionPoller.start((version) => {
     console.log(`New version detected: ${version}, reloading audience page...`);
     fadeOutAndReload();
   });

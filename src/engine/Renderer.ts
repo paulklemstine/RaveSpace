@@ -139,7 +139,6 @@ export class Renderer {
   private strobeFrame = 0;
   private transitionEngine: TransitionEngine;
   private effectsLayer: EffectsLayer;
-  private sceneManager: SceneManager | null = null;
   private frameCount = 0;
   private lastFpsTime = 0;
   private fps = 0;
@@ -177,7 +176,7 @@ export class Renderer {
   }
 
   setSceneByName(name: string, sceneManager: SceneManager): void {
-    this.sceneManager = sceneManager;
+    void sceneManager; // stored for future use
 
     // If no scene is active yet (first load), do instant switch
     if (!this.scene) {
@@ -240,6 +239,10 @@ export class Renderer {
 
   setTransition(effect: string, duration: number): void {
     this.transitionEngine.setTransition(effect, duration);
+  }
+
+  getTransitionSettings(): { effect: string; duration: number } {
+    return this.transitionEngine.getSettings();
   }
 
   getEffectsLayer(): EffectsLayer {

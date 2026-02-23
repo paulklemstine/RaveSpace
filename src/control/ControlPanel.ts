@@ -1,7 +1,6 @@
-import { ref, set, onValue, type Unsubscribe } from "firebase/database";
-import { db } from "../firebase/config";
 import { SCENE_REGISTRY } from "../scenes/registry";
 import type { ParamValues } from "../types/params";
+import type { ControlMessage, DisplayMessage, FullState } from "../comms/messages";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { ScenePicker } from "./components/ScenePicker";
 import { AudioMeters } from "./components/AudioMeters";
@@ -15,7 +14,7 @@ import { CalloutPanel } from "./components/CalloutPanel";
 
 export class ControlPanel {
   private root: HTMLElement;
-  private unsubscribers: Unsubscribe[] = [];
+  private send: (msg: ControlMessage) => void;
   private connectionStatus!: ConnectionStatus;
   private scenePicker!: ScenePicker;
   private audioMeters!: AudioMeters;
@@ -28,13 +27,92 @@ export class ControlPanel {
   private calloutPanel!: CalloutPanel;
   private activeScene = "plasma";
 
-  constructor(root: HTMLElement) {
+  constructor(root: HTMLElement, send: (msg: ControlMessage) => void) {
     this.root = root;
+    this.send = send;
   }
 
   init(): void {
     this.buildLayout();
-    this.wireListeners();
+    this.connectionStatus.update(true);
+  }
+
+  handleDisplayMessage(msg: DisplayMessage): void {
+    switch (msg.type) {
+      case "telemetry":
+        this.audioMeters.update({
+          bass: msg.audio.bass,
+          mid: msg.audio.mid,
+          treble: msg.audio.treble,
+          energy: msg.audio.energy,
+        });
+        this.bpmDisplay.update(msg.audio.bpm, msg.audio.beat);
+        this.connectionStatus.update(true);
+        break;
+
+      case "stateSync":
+        this.applyFullState(msg.state);
+        break;
+
+      case "aiAction":
+        this.aiControls.update({ lastAction: msg.action });
+        break;
+
+      case "calloutQueueUpdate":
+        this.calloutPanel.updateQueue(msg.queue);
+        break;
+
+      case "crowdUpdate":
+        // Could display crowd stats in the future
+        break;
+    }
+  }
+
+  private applyFullState(state: FullState): void {
+    // Active scene
+    if (state.activeScene) {
+      this.activeScene = state.activeScene;
+      this.scenePicker.update(state.activeScene);
+      const meta = SCENE_REGISTRY.find((s) => s.id === state.activeScene);
+      if (meta) {
+        this.paramSliders.setScene(meta.displayName, meta.params);
+      }
+    }
+
+    // Global params
+    if (state.globalParams) {
+      this.globalControls.update(state.globalParams);
+    }
+
+    // Transition
+    if (state.transition) {
+      this.transitionPicker.update(state.transition);
+    }
+
+    // Effects
+    if (state.effects) {
+      this.effectsControls.update(state.effects);
+    }
+
+    // AI mode
+    if (state.aiMode) {
+      this.aiControls.update(state.aiMode);
+    }
+
+    // Callout settings
+    if (state.calloutSettings) {
+      this.calloutPanel.updateSettings(state.calloutSettings);
+    }
+
+    // Callout queue
+    if (state.calloutQueue) {
+      this.calloutPanel.updateQueue(state.calloutQueue);
+    }
+
+    // Scene params
+    if (state.sceneParams?.[state.activeScene]) {
+      this.paramSliders.updateValues(state.sceneParams[state.activeScene]!);
+    }
   }
 
   private buildLayout(): void {
@@ -61,7 +139,7 @@ export class ControlPanel {
     sidebar.className = "space-y-6";
 
     this.scenePicker = new ScenePicker(sidebar, SCENE_REGISTRY, (sceneId) => {
-      void set(ref(db, "ravespace/control/activeScene"), sceneId);
+      this.send({ type: "setScene", scene: sceneId });
     });
 
     this.audioMeters = new AudioMeters(sidebar);
@@ -74,20 +152,20 @@ export class ControlPanel {
     content.className = "space-y-6";
 
     this.globalControls = new GlobalControls(content, (values) => {
-      void set(ref(db, "ravespace/control/globalParams"), values);
+      this.send({ type: "setGlobalParams", params: values });
     });
 
     const transitionContainer = document.createElement("div");
     transitionContainer.className = "border-t border-gray-800 pt-6";
     this.transitionPicker = new TransitionPicker(transitionContainer, (settings) => {
-      void set(ref(db, "ravespace/control/transition"), settings);
+      this.send({ type: "setTransition", ...settings });
     });
     content.appendChild(transitionContainer);
 
     const effectsContainer = document.createElement("div");
     effectsContainer.className = "border-t border-gray-800 pt-6";
     this.effectsControls = new EffectsControls(effectsContainer, (values) => {
-      void set(ref(db, "ravespace/control/effects"), values);
+      this.send({ type: "setEffects", settings: values });
     });
     content.appendChild(effectsContainer);
 
@@ -165,15 +243,12 @@ export class ControlPanel {
     // Wire overlay controls
     const writeOverlay = () => {
       const scene = overlaySelect.value || null;
-      if (!scene) {
-        void set(ref(db, "ravespace/control/overlay"), null);
-      } else {
-        void set(ref(db, "ravespace/control/overlay"), {
-          scene,
-          blendMode: blendSelect.value,
-          opacity: parseInt(opacitySlider.value, 10) / 100,
-        });
-      }
+      this.send({
+        type: "setOverlay",
+        scene,
+        blendMode: blendSelect.value,
+        opacity: parseInt(opacitySlider.value, 10) / 100,
+      });
     };
     overlaySelect.addEventListener("change", writeOverlay);
     blendSelect.addEventListener("change", writeOverlay);
@@ -182,13 +257,29 @@ export class ControlPanel {
     const aiContainer = document.createElement("div");
     aiContainer.className = "border-t border-gray-800 pt-6";
     this.aiControls = new AIControls(aiContainer, (values) => {
-      void set(ref(db, "ravespace/control/aiMode"), values);
+      this.send({ type: "setAiMode", enabled: values.enabled });
     });
     content.appendChild(aiContainer);
 
     const calloutContainer = document.createElement("div");
     calloutContainer.className = "border-t border-gray-800 pt-6";
-    this.calloutPanel = new CalloutPanel(calloutContainer);
+    this.calloutPanel = new CalloutPanel(calloutContainer, {
+      onShowCallout: (name, duration, animationStyle) => {
+        this.send({ type: "callout", name, duration, animationStyle });
+      },
+      onSettingsChange: (settings) => {
+        this.send({ type: "setCalloutSettings", ...settings });
+      },
+      onShowNext: () => {
+        this.send({ type: "showNextCallout" });
+      },
+      onClearQueue: () => {
+        this.send({ type: "clearCalloutQueue" });
+      },
+      onRemoveFromQueue: (id) => {
+        this.send({ type: "removeFromQueue", id });
+      },
+    });
     content.appendChild(calloutContainer);
 
     const paramContainer = document.createElement("div");
@@ -196,17 +287,17 @@ export class ControlPanel {
     this.paramSliders = new ParamSliders(
       paramContainer,
       (values) => {
-        void set(ref(db, `ravespace/control/sceneParams/${this.activeScene}`), values);
+        this.send({ type: "setSceneParams", scene: this.activeScene, params: values });
       },
       () => {
-        // Reset: build default values and write
+        // Reset: build default values and send
         const meta = SCENE_REGISTRY.find((s) => s.id === this.activeScene);
         if (!meta) return;
         const defaults: ParamValues = {};
         for (const p of meta.params) {
           defaults[p.key] = p.default;
         }
-        void set(ref(db, `ravespace/control/sceneParams/${this.activeScene}`), defaults);
+        this.send({ type: "setSceneParams", scene: this.activeScene, params: defaults });
       },
     );
     content.appendChild(paramContainer);
@@ -221,118 +312,8 @@ export class ControlPanel {
     }
   }
 
-  private wireListeners(): void {
-    // Listen to telemetry/audio
-    const audioRef = ref(db, "ravespace/telemetry/audio");
-    this.unsubscribers.push(
-      onValue(audioRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          this.audioMeters.update({
-            bass: data.bass ?? 0,
-            mid: data.mid ?? 0,
-            treble: data.treble ?? 0,
-            energy: data.energy ?? 0,
-          });
-          this.bpmDisplay.update(data.bpm ?? 0, data.beat ?? false);
-        }
-      }),
-    );
-
-    // Listen to telemetry/display for connection status
-    const displayRef = ref(db, "ravespace/telemetry/display");
-    this.unsubscribers.push(
-      onValue(displayRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          const stale = Date.now() - (data.timestamp ?? 0) > 5000;
-          this.connectionStatus.update(data.connected === true && !stale);
-        } else {
-          this.connectionStatus.update(false);
-        }
-      }),
-    );
-
-    // Listen to control/activeScene to keep UI in sync
-    const sceneRef = ref(db, "ravespace/control/activeScene");
-    this.unsubscribers.push(
-      onValue(sceneRef, (snapshot) => {
-        const sceneName = snapshot.val() as string | null;
-        if (sceneName && sceneName !== this.activeScene) {
-          this.activeScene = sceneName;
-          this.scenePicker.update(sceneName);
-
-          const meta = SCENE_REGISTRY.find((s) => s.id === sceneName);
-          if (meta) {
-            this.paramSliders.setScene(meta.displayName, meta.params);
-          }
-        }
-      }),
-    );
-
-    // Listen to control/globalParams to keep UI in sync
-    const globalRef = ref(db, "ravespace/control/globalParams");
-    this.unsubscribers.push(
-      onValue(globalRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          this.globalControls.update(data);
-        }
-      }),
-    );
-
-    // Listen to control/transition to keep UI in sync
-    const transitionRef = ref(db, "ravespace/control/transition");
-    this.unsubscribers.push(
-      onValue(transitionRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          this.transitionPicker.update(data);
-        }
-      }),
-    );
-
-    // Listen to control/effects to keep UI in sync
-    const effectsRef = ref(db, "ravespace/control/effects");
-    this.unsubscribers.push(
-      onValue(effectsRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          this.effectsControls.update(data);
-        }
-      }),
-    );
-
-    // Listen to control/aiMode to keep UI in sync
-    const aiRef = ref(db, "ravespace/control/aiMode");
-    this.unsubscribers.push(
-      onValue(aiRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          this.aiControls.update(data);
-        }
-      }),
-    );
-
-    // Listen to control/sceneParams for each scene
-    for (const scene of SCENE_REGISTRY) {
-      const paramRef = ref(db, `ravespace/control/sceneParams/${scene.id}`);
-      this.unsubscribers.push(
-        onValue(paramRef, (snapshot) => {
-          const values = snapshot.val() as ParamValues | null;
-          if (values && scene.id === this.activeScene) {
-            this.paramSliders.updateValues(values);
-          }
-        }),
-      );
-    }
-  }
-
   dispose(): void {
-    for (const unsub of this.unsubscribers) {
-      unsub();
-    }
-    this.unsubscribers = [];
+    this.calloutPanel.dispose();
     this.root.innerHTML = "";
   }
 }

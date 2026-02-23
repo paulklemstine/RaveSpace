@@ -1,30 +1,3 @@
-import {
-  ref,
-  onValue,
-  onChildAdded,
-  query,
-  orderByChild,
-  startAt,
-  type Unsubscribe,
-} from "firebase/database";
-import { db } from "../firebase/config";
-
-interface TapEntry {
-  rate: number;
-  ts: number;
-}
-
-interface ColorEntry {
-  hue: number;
-  ts: number;
-}
-
-interface ReactionEntry {
-  emoji: string;
-  size?: number;
-  ts: number;
-}
-
 interface FlyingEmoji {
   emoji: string;
   el: HTMLSpanElement;
@@ -49,10 +22,12 @@ const STALE_THRESHOLD_MS = 5_000;
  * - Flying emoji reactions across the screen
  * - Aggregated crowd energy from tap data
  * - Dominant hue from crowd color votes
+ *
+ * Data is pushed in via public methods (from PeerHost or any other source)
+ * rather than subscribing to Firebase directly.
  */
 export class CrowdOverlay {
   private el: HTMLDivElement;
-  private unsubscribers: Unsubscribe[] = [];
   private rafId = 0;
   private lastTime = 0;
   private flying: FlyingEmoji[] = [];
@@ -79,83 +54,66 @@ export class CrowdOverlay {
 
   start(): void {
     this.lastTime = performance.now() / 1000;
-
-    // Listen for new reactions (only recent ones)
-    const reactionsRef = query(
-      ref(db, "ravespace/crowd/reactions"),
-      orderByChild("ts"),
-      startAt(Date.now() - 2000),
-    );
-    const reactUnsub = onChildAdded(reactionsRef, (snap) => {
-      const data = snap.val() as ReactionEntry | null;
-      if (data?.emoji) {
-        this.spawnEmoji(data.emoji, data.size ?? 1);
-      }
-    });
-    this.unsubscribers.push(reactUnsub);
-
-    // Listen for tap data → crowd energy
-    const tapsUnsub = onValue(ref(db, "ravespace/crowd/taps"), (snap) => {
-      const data = snap.val() as Record<string, TapEntry> | null;
-      if (!data) {
-        this.crowdEnergy = 0;
-        return;
-      }
-      const now = Date.now();
-      let total = 0;
-      let count = 0;
-      for (const entry of Object.values(data)) {
-        if (now - entry.ts < STALE_THRESHOLD_MS) {
-          total += entry.rate;
-          count++;
-        }
-      }
-      // Normalize: 40 taps/sec aggregate = 1.0
-      this.crowdEnergy = Math.min(1, total / 40);
-    });
-    this.unsubscribers.push(tapsUnsub);
-
-    // Listen for color votes → dominant hue
-    const colorsUnsub = onValue(ref(db, "ravespace/crowd/colors"), (snap) => {
-      const data = snap.val() as Record<string, ColorEntry> | null;
-      if (!data) {
-        this.dominantHue = -1;
-        return;
-      }
-      const now = Date.now();
-      // Bin hues into 12 buckets (30° each), weighted by recency
-      const bins = new Float32Array(12);
-      for (const entry of Object.values(data)) {
-        if (now - entry.ts < 30_000) {
-          const bin = Math.floor(entry.hue / 30) % 12;
-          const recency = 1 - (now - entry.ts) / 30_000;
-          bins[bin] += recency;
-        }
-      }
-      let maxBin = 0;
-      let maxVal = 0;
-      for (let i = 0; i < 12; i++) {
-        if (bins[i]! > maxVal) {
-          maxVal = bins[i]!;
-          maxBin = i;
-        }
-      }
-      this.dominantHue = maxVal > 0 ? maxBin * 30 + 15 : -1;
-    });
-    this.unsubscribers.push(colorsUnsub);
-
-    // Listen for connected count
-    const connectedUnsub = onValue(
-      ref(db, "ravespace/crowd/connected"),
-      (snap) => {
-        const data = snap.val() as Record<string, unknown> | null;
-        this.connectedCount = data ? Object.keys(data).length : 0;
-      },
-    );
-    this.unsubscribers.push(connectedUnsub);
-
     this.animate();
   }
+
+  // --- Public data push methods (replace Firebase listeners) ---
+
+  /** Spawn a flying emoji reaction on screen */
+  handleReaction(emoji: string, size?: number): void {
+    this.spawnEmoji(emoji, size ?? 1);
+  }
+
+  /** Update crowd energy from tap data array. Filters stale entries (>5s) and normalizes to 40 taps/sec = 1.0 */
+  handleTapData(entries: Array<{ rate: number; ts: number }>): void {
+    if (entries.length === 0) {
+      this.crowdEnergy = 0;
+      return;
+    }
+    const now = Date.now();
+    let total = 0;
+    for (const entry of entries) {
+      if (now - entry.ts < STALE_THRESHOLD_MS) {
+        total += entry.rate;
+      }
+    }
+    // Normalize: 40 taps/sec aggregate = 1.0
+    this.crowdEnergy = Math.min(1, total / 40);
+  }
+
+  /** Update dominant hue from color vote data. Bins into 12 buckets (30 deg each), weighted by recency within 30s */
+  handleColorData(entries: Array<{ hue: number; ts: number }>): void {
+    if (entries.length === 0) {
+      this.dominantHue = -1;
+      return;
+    }
+    const now = Date.now();
+    // Bin hues into 12 buckets (30° each), weighted by recency
+    const bins = new Float32Array(12);
+    for (const entry of entries) {
+      if (now - entry.ts < 30_000) {
+        const bin = Math.floor(entry.hue / 30) % 12;
+        const recency = 1 - (now - entry.ts) / 30_000;
+        bins[bin]! += recency;
+      }
+    }
+    let maxBin = 0;
+    let maxVal = 0;
+    for (let i = 0; i < 12; i++) {
+      if (bins[i]! > maxVal) {
+        maxVal = bins[i]!;
+        maxBin = i;
+      }
+    }
+    this.dominantHue = maxVal > 0 ? maxBin * 30 + 15 : -1;
+  }
+
+  /** Set the connected audience count directly */
+  setConnectedCount(count: number): void {
+    this.connectedCount = count;
+  }
+
+  // --- Getters ---
 
   /** Get crowd energy [0..1] aggregated from all tapping audience members */
   getEnergy(): number {
@@ -171,6 +129,8 @@ export class CrowdOverlay {
   getConnectedCount(): number {
     return this.connectedCount;
   }
+
+  // --- Rendering (unchanged) ---
 
   private spawnEmoji(emoji: string, size: number = 1): void {
     if (this.flying.length >= MAX_FLYING) {
@@ -268,10 +228,6 @@ export class CrowdOverlay {
   };
 
   dispose(): void {
-    for (const unsub of this.unsubscribers) {
-      unsub();
-    }
-    this.unsubscribers = [];
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.el.remove();
   }

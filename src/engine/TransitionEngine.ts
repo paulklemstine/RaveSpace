@@ -77,6 +77,10 @@ export class TransitionEngine {
     return this.state === "transitioning";
   }
 
+  getSettings(): { effect: string; duration: number } {
+    return { effect: this.currentTransitionName, duration: this.duration };
+  }
+
   setTransition(name: string, duration: number): void {
     this.currentTransitionName = name;
     this.duration = duration;

@@ -1,5 +1,3 @@
-import { ref, onValue, query, orderByChild, limitToLast, type Unsubscribe } from "firebase/database";
-import { db } from "../firebase/config";
 import {
   ANIMATIONS,
   pickRandomAnimation,
@@ -7,7 +5,7 @@ import {
 } from "./callout-animations";
 
 interface QueueEntry {
-  key: string;
+  id: string;
   name: string;
   timestamp: number;
 }
@@ -17,7 +15,6 @@ type CalloutState = "idle" | "entering" | "holding" | "exiting";
 const ENTRANCE_DURATION = 0.8;
 const EXIT_DURATION = 1.0;
 const GAP_BETWEEN_CALLOUTS_MS = 3_000;
-const MAX_QUEUE_SIZE = 200;
 const HOLD_DURATION = 5;
 
 /**
@@ -36,11 +33,9 @@ export class CalloutOverlay {
   private glowLayer: HTMLDivElement;
   private charSpans: HTMLSpanElement[] = [];
   private glowSpans: HTMLSpanElement[] = [];
-  private unsubscribers: Unsubscribe[] = [];
   private rafId = 0;
   private showStartTime = 0;
   private showDuration = HOLD_DURATION;
-  private isShowing = false;
 
   // Animation state machine
   private state: CalloutState = "idle";
@@ -106,35 +101,36 @@ export class CalloutOverlay {
     document.body.appendChild(this.el);
   }
 
-  start(): void {
-    // Listen for queue changes — keep all entries in memory, cycle through them
-    const queueRef = query(
-      ref(db, "ravespace/callouts/queue"),
-      orderByChild("timestamp"),
-      limitToLast(MAX_QUEUE_SIZE),
-    );
-    const unsub = onValue(queueRef, (snapshot) => {
-      const entries: QueueEntry[] = [];
-      snapshot.forEach((child) => {
-        const val = child.val();
-        if (val?.name) {
-          entries.push({
-            key: child.key!,
-            name: val.name,
-            timestamp: val.timestamp ?? 0,
-          });
-        }
-      });
-      // Sort by timestamp ascending
-      entries.sort((a, b) => a.timestamp - b.timestamp);
-      this.queue = entries;
+  /** Directly trigger showing a callout with given name and duration */
+  trigger(name: string, duration: number): void {
+    this.show(name, duration);
+  }
 
-      // If we just got our first entry and nothing is showing, kick off the cycle
-      if (entries.length > 0 && this.state === "idle" && !this.gapTimer) {
-        this.showNext();
-      }
-    });
-    this.unsubscribers.push(unsub);
+  /** Add an entry to the cycling queue */
+  addToQueue(id: string, name: string, timestamp: number): void {
+    this.queue.push({ id, name, timestamp });
+    this.queue.sort((a, b) => a.timestamp - b.timestamp);
+
+    // If we just got our first entry and nothing is showing, kick off the cycle
+    if (this.queue.length === 1 && this.state === "idle" && !this.gapTimer) {
+      this.showNext();
+    }
+  }
+
+  /** Remove an entry from the queue */
+  removeFromQueue(id: string): void {
+    this.queue = this.queue.filter((e) => e.id !== id);
+  }
+
+  /** Clear the entire queue */
+  clearQueue(): void {
+    this.queue = [];
+    this.cycleIndex = 0;
+  }
+
+  /** Get the current queue */
+  getQueue(): QueueEntry[] {
+    return [...this.queue];
   }
 
   // ─── Cycling Queue ────────────────────────────────────────────
@@ -213,7 +209,7 @@ export class CalloutOverlay {
       this.glowSpans.push(glow);
     }
 
-    this.isShowing = true;
+    // showing
     this.showStartTime = performance.now();
     this.state = "entering";
     this.stateStartTime = performance.now();
@@ -245,7 +241,7 @@ export class CalloutOverlay {
         if (stateElapsed >= this.showDuration) {
           this.state = "exiting";
           this.stateStartTime = now;
-          this.isShowing = false;
+          // done showing
         }
         break;
       }
@@ -272,10 +268,6 @@ export class CalloutOverlay {
   };
 
   dispose(): void {
-    for (const unsub of this.unsubscribers) {
-      unsub();
-    }
-    this.unsubscribers = [];
     if (this.gapTimer) clearTimeout(this.gapTimer);
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.el.remove();

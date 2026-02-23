@@ -1,5 +1,5 @@
 import "./index.css";
-import { showStartScreen } from "./ui/StartScreen";
+import { showStartScreen, showPairingCode } from "./ui/StartScreen";
 import { Renderer } from "./engine/Renderer";
 import { SceneManager } from "./engine/SceneManager";
 import { PlasmaShader } from "./scenes/PlasmaShader";
@@ -36,9 +36,6 @@ import { StainedGlass } from "./scenes/StainedGlass";
 import { ElectricStorm } from "./scenes/ElectricStorm";
 import { AudioAnalyzer } from "./audio/AudioAnalyzer";
 import { SCENE_REGISTRY } from "./scenes/registry";
-import { TelemetryPublisher } from "./firebase/TelemetryPublisher";
-import { ControlListener } from "./firebase/ControlListener";
-import { VersionWatcher } from "./firebase/VersionWatcher";
 import { DiagnosticOverlay } from "./ui/DiagnosticOverlay";
 import { DropDetector } from "./audio/DropDetector";
 import { AutoVJ } from "./agent/AutoVJ";
@@ -46,11 +43,22 @@ import { GeminiPhraseGen } from "./agent/GeminiPhraseGen";
 import { CalloutOverlay } from "./engine/CalloutOverlay";
 import { CrowdOverlay } from "./engine/CrowdOverlay";
 import { EmojiRain } from "./engine/EmojiRain";
-import { ref, onValue } from "firebase/database";
-import { db } from "./firebase/config";
+import { PeerHost } from "./comms/PeerHost";
+import { VersionPoller } from "./comms/VersionPoller";
+import type {
+  ControlMessage,
+  AudienceMessage,
+  FullState,
+  AudioTelemetry,
+  CalloutQueueItem,
+} from "./comms/messages";
+import type { DataConnection } from "peerjs";
+import type { ParamValues } from "./types/params";
 
 const STORAGE_FROZEN_FRAME = "ravespace_frozen_frame";
 const STORAGE_AUTO_UPDATE = "ravespace_auto_update";
+const TELEMETRY_INTERVAL_MS = 200; // 5Hz
+const SHOUTOUT_COOLDOWN_MS = 60_000;
 
 function isAutoUpdate(): boolean {
   return sessionStorage.getItem(STORAGE_AUTO_UPDATE) === "true";
@@ -140,6 +148,20 @@ const SCENE_FACTORIES: (() => InstanceType<typeof PlasmaShader | typeof Particle
   () => new ElectricStorm(),
 ];
 
+// ─── State tracked for state sync ─────────────────────────────
+
+let calloutSettings = { autoShow: false, interval: 30, aiPhrasesEnabled: false, aiPhraseInterval: 45 };
+let sceneParamsStore: Record<string, ParamValues> = {};
+let currentOverlay: { scene: string; blendMode: string; opacity: number } | null = null;
+// aiEnabled tracked via autoVJ.isEnabled()
+
+// Audience rate limiting: deviceId → last shoutout timestamp
+const audienceShoutoutTimestamps = new Map<string, number>();
+
+// Audience crowd data: deviceId → latest data
+const audienceTapData = new Map<string, { rate: number; ts: number }>();
+const audienceColorData = new Map<string, { hue: number; ts: number }>();
+
 async function boot() {
   const autoUpdate = isAutoUpdate();
   clearAutoUpdateFlags();
@@ -177,44 +199,31 @@ async function boot() {
     });
   }
 
-  // Telemetry: publish audio features to RTDB at 5Hz
-  const telemetry = new TelemetryPublisher(audio, renderer);
-  telemetry.start();
+  // Callout overlay: audience shoutouts on screen
+  const calloutOverlay = new CalloutOverlay();
 
-  // Control listener: receive scene switches, param changes from RTDB
-  const control = new ControlListener(renderer, sceneManager);
-  control.start();
+  // Crowd overlay: emoji reactions + crowd energy/color aggregation
+  const crowdOverlay = new CrowdOverlay();
+  crowdOverlay.start();
 
-  // AutoVJ agent: AI-driven scene/param control
-  const autoVJ = new AutoVJ();
+  // Emoji rain: ambient emojis sprinkled across the screen, synced to music
+  const emojiRain = new EmojiRain(audio);
+  emojiRain.start();
+
+  // AutoVJ agent: AI-driven scene/param control (now with direct renderer calls)
+  const autoVJ = new AutoVJ(renderer, sceneManager, (name, duration, _animStyle) => {
+    calloutOverlay.trigger(name, duration);
+  });
+  autoVJ.setEmojiRain(emojiRain);
 
   // Gemini phrase generation for AI callouts
-  // Always create phraseGen so fallback phrases work even without an API key
   const geminiKey = (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ?? "";
   if (!geminiKey) {
     console.warn("[RaveSpace] VITE_GEMINI_API_KEY not set — AI phrases will use fallback mode");
   }
   const phraseGen = new GeminiPhraseGen(geminiKey);
-  // Aggressive prefetch: fill cache for all energy levels on boot
   void phraseGen.prefetchAll();
   autoVJ.setPhraseGen(phraseGen);
-
-  // Listen for AI mode toggle from control panel
-  onValue(ref(db, "ravespace/control/aiMode"), (snapshot) => {
-    const data = snapshot.val() as { enabled?: boolean } | null;
-    autoVJ.setEnabled(data?.enabled === true);
-  });
-
-  // Listen for callout settings (AI phrases toggle + interval)
-  onValue(ref(db, "ravespace/callouts/settings"), (snapshot) => {
-    const data = snapshot.val();
-    if (data) {
-      autoVJ.setPhrasesEnabled(data.aiPhrasesEnabled === true);
-      if (data.aiPhraseInterval) {
-        autoVJ.setPhraseInterval(data.aiPhraseInterval);
-      }
-    }
-  });
 
   // Drop detector: triggers dopamine effects on beat drops + feeds AutoVJ
   const effects = renderer.getEffectsLayer();
@@ -237,26 +246,8 @@ async function boot() {
   };
   requestAnimationFrame(updateAudioDriven);
 
-  // Callout overlay: audience shoutouts on screen
-  const calloutOverlay = new CalloutOverlay();
-  calloutOverlay.start();
-
-  // Crowd overlay: emoji reactions + crowd energy/color aggregation
-  const crowdOverlay = new CrowdOverlay();
-  crowdOverlay.start();
-
-  // Emoji rain: ambient emojis sprinkled across the screen, synced to music
-  const emojiRain = new EmojiRain(audio);
-  emojiRain.start();
-  autoVJ.setEmojiRain(emojiRain);
-
-  // Listen for emoji rain toggle from RTDB
-  onValue(ref(db, "ravespace/control/emojiRain"), (snapshot) => {
-    const data = snapshot.val() as { enabled?: boolean } | null;
-    if (data != null) {
-      emojiRain.setEnabled(data.enabled !== false);
-    }
-  });
+  // Diagnostic overlay: toggle with D key
+  new DiagnosticOverlay(renderer, audio);
 
   // Toggle emoji rain with 'E' key
   window.addEventListener("keydown", (e) => {
@@ -265,12 +256,268 @@ async function boot() {
     }
   });
 
-  // Diagnostic overlay: toggle with D key
-  new DiagnosticOverlay(renderer, audio);
+  // ─── Build full state for controller sync ──────────────────
 
-  // Version watcher: capture frame + seamless reload on deploy
-  const versionWatcher = new VersionWatcher();
-  versionWatcher.start((version) => {
+  function buildFullState(): FullState {
+    return {
+      activeScene: renderer.getActiveSceneName() ?? "plasma",
+      globalParams: renderer.getGlobalParams(),
+      transition: renderer.getTransitionSettings(),
+      effects: effects.getSettings(),
+      aiMode: { enabled: autoVJ.isEnabled(), lastAction: autoVJ.getLastAction() },
+      overlay: currentOverlay,
+      bandMappings: [],
+      calloutSettings,
+      calloutQueue: calloutOverlay.getQueue().map((e) => ({
+        id: e.id,
+        name: e.name,
+        timestamp: e.timestamp,
+      })),
+      emojiRain: { enabled: emojiRain.isEnabled() },
+      sceneParams: sceneParamsStore,
+    };
+  }
+
+  // ─── Handle control messages from VJ controller ────────────
+
+  function handleControlMessage(msg: ControlMessage): void {
+    switch (msg.type) {
+      case "setScene":
+        renderer.setSceneByName(msg.scene, sceneManager);
+        break;
+
+      case "setGlobalParams":
+        renderer.setGlobalParams(msg.params);
+        break;
+
+      case "setTransition":
+        renderer.setTransition(msg.effect, msg.duration);
+        break;
+
+      case "setEffects":
+        renderer.setEffectsSettings(msg.settings);
+        break;
+
+      case "setAiMode":
+        autoVJ.setEnabled(msg.enabled);
+        break;
+
+      case "setSceneParams": {
+        sceneParamsStore[msg.scene] = msg.params;
+        if (msg.scene === renderer.getActiveSceneName()) {
+          renderer.setSceneParams(msg.params);
+        }
+        break;
+      }
+
+      case "callout":
+        calloutOverlay.trigger(msg.name, msg.duration);
+        break;
+
+      case "setOverlay":
+        if (!msg.scene) {
+          renderer.clearOverlayScene();
+          currentOverlay = null;
+        } else {
+          renderer.setOverlayScene(msg.scene, sceneManager);
+          if (msg.blendMode) renderer.setBlendMode(msg.blendMode);
+          if (msg.opacity !== undefined) renderer.setOverlayOpacity(msg.opacity);
+          currentOverlay = {
+            scene: msg.scene,
+            blendMode: msg.blendMode ?? "screen",
+            opacity: msg.opacity ?? 0.3,
+          };
+        }
+        break;
+
+      case "setBandMappings":
+        renderer.setBandMappings(msg.mappings);
+        break;
+
+      case "setCalloutSettings":
+        calloutSettings = {
+          autoShow: msg.autoShow,
+          interval: msg.interval,
+          aiPhrasesEnabled: msg.aiPhrasesEnabled,
+          aiPhraseInterval: msg.aiPhraseInterval,
+        };
+        autoVJ.setPhrasesEnabled(msg.aiPhrasesEnabled);
+        autoVJ.setPhraseInterval(msg.aiPhraseInterval);
+        break;
+
+      case "setEmojiRain":
+        emojiRain.setEnabled(msg.enabled);
+        break;
+
+      case "showNextCallout": {
+        const queue = calloutOverlay.getQueue();
+        if (queue.length > 0) {
+          const next = queue[0]!;
+          calloutOverlay.trigger(next.name, 5);
+          calloutOverlay.removeFromQueue(next.id);
+          sendQueueUpdate();
+        }
+        break;
+      }
+
+      case "clearCalloutQueue":
+        calloutOverlay.clearQueue();
+        sendQueueUpdate();
+        break;
+
+      case "removeFromQueue":
+        calloutOverlay.removeFromQueue(msg.id);
+        sendQueueUpdate();
+        break;
+    }
+  }
+
+  // ─── Handle audience messages ──────────────────────────────
+
+  function handleAudienceMessage(conn: DataConnection, msg: AudienceMessage): void {
+    // Find device ID from connection metadata or peer
+    const deviceId = conn.peer;
+
+    switch (msg.type) {
+      case "tapRate":
+        audienceTapData.set(deviceId, { rate: msg.rate, ts: Date.now() });
+        crowdOverlay.handleTapData([...audienceTapData.values()]);
+        break;
+
+      case "reaction":
+        crowdOverlay.handleReaction(msg.emoji, msg.size);
+        break;
+
+      case "color":
+        audienceColorData.set(deviceId, { hue: msg.hue, ts: Date.now() });
+        crowdOverlay.handleColorData([...audienceColorData.values()]);
+        break;
+
+      case "shoutout": {
+        const now = Date.now();
+        const lastTime = audienceShoutoutTimestamps.get(deviceId) ?? 0;
+        if (now - lastTime < SHOUTOUT_COOLDOWN_MS) {
+          host.sendToAudience(conn, { type: "shoutoutAck", status: "rateLimited" });
+          return;
+        }
+        audienceShoutoutTimestamps.set(deviceId, now);
+
+        const id = `${now}-${Math.random().toString(36).slice(2, 6)}`;
+        calloutOverlay.addToQueue(id, msg.name, now);
+        host.sendToAudience(conn, { type: "shoutoutAck", status: "queued" });
+        sendQueueUpdate();
+        break;
+      }
+    }
+  }
+
+  function sendQueueUpdate(): void {
+    const queue: CalloutQueueItem[] = calloutOverlay.getQueue().map((e) => ({
+      id: e.id,
+      name: e.name,
+      timestamp: e.timestamp,
+    }));
+    host.sendToController({ type: "calloutQueueUpdate", queue });
+    // Update AutoVJ's queue size tracking
+    autoVJ.setCalloutQueueSize(queue.length);
+  }
+
+  // ─── PeerHost setup ────────────────────────────────────────
+
+  let pairingOverlay: { hide: () => void } | null = null;
+
+  const host = new PeerHost({
+    onControlMessage: handleControlMessage,
+    onAudienceMessage: handleAudienceMessage,
+    onControllerConnected: () => {
+      if (pairingOverlay) {
+        pairingOverlay.hide();
+        pairingOverlay = null;
+      }
+      return buildFullState();
+    },
+    onControllerDisconnected: () => {
+      // Could show pairing code again, but for now just log
+      console.log("[PeerHost] Controller disconnected");
+    },
+    onCodeReady: (code) => {
+      pairingOverlay = showPairingCode(code);
+      console.log(`[PeerHost] Pairing code: ${code}`);
+    },
+  });
+
+  host.start();
+
+  // ─── Telemetry broadcast (5Hz) ─────────────────────────────
+
+  let lastAiAction = "";
+
+  setInterval(() => {
+    const features = audio.getFeatures();
+
+    function safe(v: number): number {
+      return Number.isFinite(v) ? v : 0;
+    }
+
+    const audioTelemetry: AudioTelemetry = {
+      energy: safe(Math.round(features.energy * 1000) / 1000),
+      bass: safe(Math.round(features.bass * 1000) / 1000),
+      mid: safe(Math.round(features.mid * 1000) / 1000),
+      treble: safe(Math.round(features.treble * 1000) / 1000),
+      spectralCentroid: safe(Math.round(features.spectralCentroid * 1000) / 1000),
+      beat: features.beat,
+      bpm: safe(Math.round(features.bpm)),
+      kick: safe(Math.round(features.kick * 1000) / 1000),
+      beatIntensity: safe(Math.round(features.beatIntensity * 1000) / 1000),
+      spectralFlux: safe(Math.round(features.spectralFlux * 1000) / 1000),
+    };
+
+    // Send telemetry to controller
+    host.sendToController({
+      type: "telemetry",
+      audio: audioTelemetry,
+      display: {
+        connected: true,
+        scene: renderer.getActiveSceneName() ?? "unknown",
+        fps: 60,
+      },
+    });
+
+    // Send telemetry to audience
+    host.broadcastToAudience({
+      type: "telemetry",
+      audio: audioTelemetry,
+      crowdEnergy: crowdOverlay.getEnergy(),
+      connectedCount: host.getAudienceCount(),
+      bpm: audioTelemetry.bpm,
+    });
+
+    // Update crowd connected count
+    crowdOverlay.setConnectedCount(host.getAudienceCount());
+
+    // Track AI action changes
+    const currentAction = autoVJ.getLastAction();
+    if (currentAction !== lastAiAction) {
+      lastAiAction = currentAction;
+      host.sendToController({ type: "aiAction", action: currentAction });
+    }
+
+    // Send crowd update to controller
+    host.sendToController({
+      type: "crowdUpdate",
+      energy: crowdOverlay.getEnergy(),
+      connectedCount: host.getAudienceCount(),
+      dominantHue: crowdOverlay.getDominantHue(),
+    });
+
+    // Track callout active state for AutoVJ
+    autoVJ.setCalloutActive(calloutOverlay.getQueue().length > 0);
+  }, TELEMETRY_INTERVAL_MS);
+
+  // ─── Version polling: capture frame + seamless reload ──────
+
+  const versionPoller = new VersionPoller();
+  versionPoller.start((version) => {
     console.log(`New version detected: ${version}, capturing frame and reloading...`);
     captureAndReload();
   });

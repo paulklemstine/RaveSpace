@@ -1,15 +1,8 @@
-import { ref, set, onValue, remove, onChildAdded, type Unsubscribe } from "firebase/database";
-import { db } from "../../firebase/config";
 import { ANIMATION_STYLES, type AnimationStyleName } from "../../engine/callout-animations";
-
-interface QueueItem {
-  key: string;
-  name: string;
-  timestamp: number;
-}
+import type { CalloutQueueItem } from "../../comms/messages";
 
 export class CalloutPanel {
-  private queue: QueueItem[] = [];
+  private queue: CalloutQueueItem[] = [];
   private queueListEl: HTMLDivElement;
   private manualInput: HTMLInputElement;
   private autoShowCheck: HTMLInputElement;
@@ -17,10 +10,29 @@ export class CalloutPanel {
   private animStyleSelect: HTMLSelectElement;
   private aiPhrasesCheck: HTMLInputElement;
   private aiIntervalInput: HTMLInputElement;
-  private unsubscribers: Unsubscribe[] = [];
   private autoShowTimer: ReturnType<typeof setInterval> | null = null;
+  private onShowCallout: (name: string, duration: number, animationStyle?: AnimationStyleName) => void;
+  private onSettingsChange: (settings: { autoShow: boolean; interval: number; aiPhrasesEnabled: boolean; aiPhraseInterval: number }) => void;
+  private onShowNext: () => void;
+  private onClearQueue: () => void;
+  private onRemoveFromQueue: (id: string) => void;
 
-  constructor(parent: HTMLElement) {
+  constructor(
+    parent: HTMLElement,
+    callbacks: {
+      onShowCallout: (name: string, duration: number, animationStyle?: AnimationStyleName) => void;
+      onSettingsChange: (settings: { autoShow: boolean; interval: number; aiPhrasesEnabled: boolean; aiPhraseInterval: number }) => void;
+      onShowNext: () => void;
+      onClearQueue: () => void;
+      onRemoveFromQueue: (id: string) => void;
+    },
+  ) {
+    this.onShowCallout = callbacks.onShowCallout;
+    this.onSettingsChange = callbacks.onSettingsChange;
+    this.onShowNext = callbacks.onShowNext;
+    this.onClearQueue = callbacks.onClearQueue;
+    this.onRemoveFromQueue = callbacks.onRemoveFromQueue;
+
     const section = document.createElement("div");
     section.className = "space-y-3";
 
@@ -63,7 +75,6 @@ export class CalloutPanel {
     this.animStyleSelect.className =
       "bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white cursor-pointer";
 
-    // Random option
     const randomOpt = document.createElement("option");
     randomOpt.value = "random";
     randomOpt.textContent = "Random";
@@ -92,13 +103,13 @@ export class CalloutPanel {
     nextBtn.textContent = "Show Next";
     nextBtn.className =
       "text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 transition-colors cursor-pointer";
-    nextBtn.addEventListener("click", () => this.showNext());
+    nextBtn.addEventListener("click", () => this.onShowNext());
 
     const clearBtn = document.createElement("button");
     clearBtn.textContent = "Clear All";
     clearBtn.className =
       "text-xs px-2 py-1 rounded bg-red-900/50 hover:bg-red-800/50 text-red-400 transition-colors cursor-pointer";
-    clearBtn.addEventListener("click", () => this.clearQueue());
+    clearBtn.addEventListener("click", () => this.onClearQueue());
 
     queueBtns.append(nextBtn, clearBtn);
     queueHeader.append(queueTitle, queueBtns);
@@ -180,40 +191,31 @@ export class CalloutPanel {
     section.appendChild(qrHint);
 
     parent.appendChild(section);
-    this.wireListeners();
   }
 
-  private wireListeners(): void {
-    // Listen for queue additions
-    const queueRef = ref(db, "ravespace/callouts/queue");
-    this.unsubscribers.push(
-      onChildAdded(queueRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data?.name) {
-          this.queue.push({
-            key: snapshot.key!,
-            name: data.name,
-            timestamp: data.timestamp ?? Date.now(),
-          });
-          this.renderQueue();
-        }
-      }),
-    );
+  updateQueue(queue: CalloutQueueItem[]): void {
+    this.queue = queue;
+    this.renderQueue();
+  }
 
-    // Listen for settings
-    const settingsRef = ref(db, "ravespace/callouts/settings");
-    this.unsubscribers.push(
-      onValue(settingsRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          if (data.autoShow !== undefined) this.autoShowCheck.checked = data.autoShow;
-          if (data.interval !== undefined) this.intervalInput.value = String(data.interval);
-          if (data.aiPhrasesEnabled !== undefined) this.aiPhrasesCheck.checked = data.aiPhrasesEnabled;
-          if (data.aiPhraseInterval !== undefined) this.aiIntervalInput.value = String(data.aiPhraseInterval);
-          this.setupAutoShow();
-        }
-      }),
-    );
+  updateSettings(fromSync?: { autoShow: boolean; interval: number; aiPhrasesEnabled: boolean; aiPhraseInterval: number }): void {
+    if (fromSync) {
+      this.autoShowCheck.checked = fromSync.autoShow;
+      this.intervalInput.value = String(fromSync.interval);
+      this.aiPhrasesCheck.checked = fromSync.aiPhrasesEnabled;
+      this.aiIntervalInput.value = String(fromSync.aiPhraseInterval);
+      this.setupAutoShow();
+      return;
+    }
+
+    const settings = {
+      autoShow: this.autoShowCheck.checked,
+      interval: parseInt(this.intervalInput.value, 10) || 30,
+      aiPhrasesEnabled: this.aiPhrasesCheck.checked,
+      aiPhraseInterval: parseInt(this.aiIntervalInput.value, 10) || 45,
+    };
+    this.onSettingsChange(settings);
+    this.setupAutoShow();
   }
 
   private renderQueue(): void {
@@ -237,7 +239,7 @@ export class CalloutPanel {
       showBtn.className = "text-xs text-purple-400 hover:text-purple-300 cursor-pointer";
       showBtn.addEventListener("click", () => {
         this.showCallout(item.name);
-        this.removeFromQueue(item.key);
+        this.onRemoveFromQueue(item.id);
       });
 
       const deleteBtn = document.createElement("button");
@@ -245,7 +247,7 @@ export class CalloutPanel {
       deleteBtn.className = "text-xs text-red-500 hover:text-red-400 cursor-pointer";
       deleteBtn.title = "Delete";
       deleteBtn.addEventListener("click", () => {
-        this.removeFromQueue(item.key);
+        this.onRemoveFromQueue(item.id);
       });
 
       btnGroup.append(showBtn, deleteBtn);
@@ -259,43 +261,7 @@ export class CalloutPanel {
     const animationStyle = selectedStyle === "random"
       ? undefined
       : selectedStyle as AnimationStyleName;
-
-    void set(ref(db, "ravespace/callouts/active"), {
-      name,
-      startTime: Date.now(),
-      duration: 5,
-      source: "vj" as const,
-      animationStyle,
-    });
-  }
-
-  private showNext(): void {
-    if (this.queue.length === 0) return;
-    const next = this.queue.shift()!;
-    this.showCallout(next.name);
-    this.removeFromQueue(next.key);
-    this.renderQueue();
-  }
-
-  private removeFromQueue(key: string): void {
-    void remove(ref(db, `ravespace/callouts/queue/${key}`));
-    this.queue = this.queue.filter((item) => item.key !== key);
-    this.renderQueue();
-  }
-
-  private clearQueue(): void {
-    void remove(ref(db, "ravespace/callouts/queue"));
-    this.queue = [];
-    this.renderQueue();
-  }
-
-  private updateSettings(): void {
-    void set(ref(db, "ravespace/callouts/settings"), {
-      autoShow: this.autoShowCheck.checked,
-      interval: parseInt(this.intervalInput.value, 10) || 30,
-      aiPhrasesEnabled: this.aiPhrasesCheck.checked,
-      aiPhraseInterval: parseInt(this.aiIntervalInput.value, 10) || 45,
-    });
+    this.onShowCallout(name, 5, animationStyle);
   }
 
   private setupAutoShow(): void {
@@ -305,15 +271,11 @@ export class CalloutPanel {
     }
     if (this.autoShowCheck.checked) {
       const interval = (parseInt(this.intervalInput.value, 10) || 30) * 1000;
-      this.autoShowTimer = setInterval(() => this.showNext(), interval);
+      this.autoShowTimer = setInterval(() => this.onShowNext(), interval);
     }
   }
 
   dispose(): void {
-    for (const unsub of this.unsubscribers) {
-      unsub();
-    }
-    this.unsubscribers = [];
     if (this.autoShowTimer) {
       clearInterval(this.autoShowTimer);
     }

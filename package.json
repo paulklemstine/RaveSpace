@@ -11,20 +11,19 @@
     "test": "vitest run",
     "test:watch": "vitest --watch",
     "post-deploy": "tsx scripts/post-deploy.ts",
-    "deploy": "npm run build && FUNCTIONS_DISCOVERY_TIMEOUT=60000 firebase deploy --only hosting,database && npm run post-deploy"
+    "deploy": "npm run build && npm run post-deploy && FUNCTIONS_DISCOVERY_TIMEOUT=60000 firebase deploy --only hosting"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
-    "firebase": "^11.0.0",
     "gl-transitions": "^1.43.0",
     "meyda": "^5.6.0",
+    "peerjs": "^1.5.5",
     "realtime-bpm-analyzer": "^5.0.0",
     "three": "^0.170.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
     "@types/three": "^0.170.0",
-    "firebase-admin": "^13.0.0",
     "tailwindcss": "^4.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",

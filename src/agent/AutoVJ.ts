@@ -1,5 +1,5 @@
-import { ref, set, update, onValue, type Unsubscribe } from "firebase/database";
-import { db } from "../firebase/config";
+import type { Renderer } from "../engine/Renderer";
+import type { SceneManager } from "../engine/SceneManager";
 import type { AudioFeatures } from "../types/audio";
 import type { NumberParam, SelectParam } from "../types/params";
 import type { BandMapping } from "../types/bands";
@@ -32,6 +32,9 @@ interface OverlaySlot {
 }
 
 export class AutoVJ {
+  private renderer: Renderer;
+  private sceneManager: SceneManager;
+
   private enabled = true;
   private state: AutoVJState = "idle";
   private currentEnergy: EnergyLevel = "low";
@@ -46,8 +49,6 @@ export class AutoVJ {
   private energySmoothed = 0;
   private prevEnergyLevel: EnergyLevel = "low";
 
-  // Multi-layer overlay state (up to 3 overlays)
-  private activeOverlays: (OverlaySlot | null)[] = [null, null, null];
 
   // Phrase generation
   private phraseGen: GeminiPhraseGen | null = null;
@@ -55,21 +56,39 @@ export class AutoVJ {
   private phraseInterval = 45; // seconds
   private lastPhraseTime = 0;
   private calloutActive = false;
-  private calloutUnsub: Unsubscribe | null = null;
+  private calloutQueueSize = 0;
+
+  // Callout callback
+  private onShowCallout: ((name: string, duration: number, animationStyle: string) => void) | null = null;
+
+  // Last action tracking (replaces Firebase aiMode/lastAction)
+  private lastAction = "";
 
   // Emoji rain
   private emojiRain: EmojiRain | null = null;
   private lastEmojiPick = 0;
   private lastBpm = 0;
 
+  constructor(
+    renderer: Renderer,
+    sceneManager: SceneManager,
+    onShowCallout?: (name: string, duration: number, animationStyle: string) => void,
+  ) {
+    this.renderer = renderer;
+    this.sceneManager = sceneManager;
+    this.onShowCallout = onShowCallout ?? null;
+  }
+
   setPhraseGen(gen: GeminiPhraseGen): void {
     this.phraseGen = gen;
-    // Listen to callout active state
-    if (!this.calloutUnsub) {
-      this.calloutUnsub = onValue(ref(db, "ravespace/callouts/active"), (snapshot) => {
-        this.calloutActive = snapshot.exists() && snapshot.val()?.name != null;
-      });
-    }
+  }
+
+  setCalloutActive(active: boolean): void {
+    this.calloutActive = active;
+  }
+
+  setCalloutQueueSize(size: number): void {
+    this.calloutQueueSize = size;
   }
 
   private static readonly EMOJI_BY_ENERGY: Record<EnergyLevel, string[]> = {
@@ -104,7 +123,7 @@ export class AutoVJ {
     this.enabled = enabled;
     if (enabled) {
       this.state = "idle";
-      void set(ref(db, "ravespace/control/aiMode/lastAction"), "AI VJ activated");
+      this.lastAction = "AI VJ activated";
     }
   }
 
@@ -114,6 +133,10 @@ export class AutoVJ {
 
   getState(): AutoVJState {
     return this.state;
+  }
+
+  getLastAction(): string {
+    return this.lastAction;
   }
 
   /** Called every frame with current audio features */
@@ -200,16 +223,12 @@ export class AutoVJ {
       this.state = "dropping";
       const profile = MOOD_PROFILES.peak;
       const transition = pickRandom(profile.transitions);
-      void set(ref(db, "ravespace/control/transition"), {
-        effect: transition,
-        duration: 0.5 + intensity,
-      });
+      this.renderer.setTransition(transition, 0.5 + intensity);
 
       // Spike intensity params on drop
       this.spikeParams();
 
-      void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Drop! ${transition} + param spike`);
+      this.lastAction = `Drop! ${transition} + param spike`;
     }
   }
 
@@ -219,13 +238,12 @@ export class AutoVJ {
     if (intensity > 0.5) {
       this.state = "building";
       const speed = 1.0 + intensity * 1.5;
-      void set(ref(db, "ravespace/control/globalParams/speedMultiplier"), speed);
+      this.renderer.setGlobalParams({ speedMultiplier: speed });
 
       // Gradually raise intensity params during build
       this.nudgeIntensityParams(0.6 + intensity * 0.4);
 
-      void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Building... speed ${speed.toFixed(1)}x`);
+      this.lastAction = `Building... speed ${speed.toFixed(1)}x`;
     }
   }
 
@@ -246,7 +264,7 @@ export class AutoVJ {
     // Adjust global params
     const intensity = randomInRange(...profile.intensityRange);
     const speed = randomInRange(...profile.speedRange);
-    void set(ref(db, "ravespace/control/globalParams"), {
+    this.renderer.setGlobalParams({
       masterIntensity: intensity,
       speedMultiplier: speed,
       blackout: false,
@@ -256,10 +274,10 @@ export class AutoVJ {
     // Change transition style
     if (nowSec - this.lastTransitionChange > MIN_TRANSITION_INTERVAL) {
       const transition = pickRandom(profile.transitions);
-      void set(ref(db, "ravespace/control/transition"), {
-        effect: transition,
-        duration: this.currentEnergy === "peak" ? 1.5 : 3,
-      });
+      this.renderer.setTransition(
+        transition,
+        this.currentEnergy === "peak" ? 1.5 : 3,
+      );
       this.lastTransitionChange = nowSec;
     }
 
@@ -272,8 +290,8 @@ export class AutoVJ {
     // Pick a fresh emoji for the rain overlay
     this.pickEmojiForRain();
 
-    void set(ref(db, "ravespace/control/aiMode/lastAction"),
-      `Energy: ${this.currentEnergy} → intensity ${intensity.toFixed(1)}, speed ${speed.toFixed(1)}`);
+    this.lastAction =
+      `Energy: ${this.currentEnergy} → intensity ${intensity.toFixed(1)}, speed ${speed.toFixed(1)}`;
   }
 
   // ─── Scene Switching ────────────────────────────────────────
@@ -295,8 +313,7 @@ export class AutoVJ {
       this.switchToScene(newScene, nowSec);
     }
     void this.maybeShowPhrase(nowSec, "drop");
-    void set(ref(db, "ravespace/control/aiMode/lastAction"),
-      `DROP → ${this.currentScene}`);
+    this.lastAction = `DROP → ${this.currentScene}`;
   }
 
   private applyChillScene(nowSec: number): void {
@@ -304,12 +321,8 @@ export class AutoVJ {
     const newScene = pickRandom(profile.scenes);
     if (newScene !== this.currentScene) {
       this.switchToScene(newScene, nowSec);
-      void set(ref(db, "ravespace/control/transition"), {
-        effect: pickRandom(profile.transitions),
-        duration: 5,
-      });
-      void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Chilling → ${newScene}`);
+      this.renderer.setTransition(pickRandom(profile.transitions), 5);
+      this.lastAction = `Chilling → ${newScene}`;
     }
   }
 
@@ -321,19 +334,19 @@ export class AutoVJ {
     this.currentScene = sceneId;
     this.lastSceneSwitch = nowSec;
 
-    void set(ref(db, "ravespace/control/activeScene"), sceneId);
+    this.renderer.setSceneByName(sceneId, this.sceneManager);
     void this.maybeShowPhrase(nowSec, "sceneSwitch");
 
     // Generate and push params for this scene
     const params = this.generateSceneParams(sceneId);
     if (params) {
-      void set(ref(db, `ravespace/control/sceneParams/${sceneId}`), params);
+      this.renderer.setSceneParams(params);
     }
 
     // Generate and push band→param mappings
     const mappings = this.generateBandMappings(sceneId);
     if (mappings.length > 0) {
-      void set(ref(db, "ravespace/control/bandMappings"), mappings);
+      this.renderer.setBandMappings(mappings);
     }
   }
 
@@ -452,11 +465,10 @@ export class AutoVJ {
       updates[np.key] = Math.round(newVal / np.step) * np.step;
     }
 
-    void update(ref(db, `ravespace/control/sceneParams/${this.currentScene}`), updates);
+    this.renderer.setSceneParams({ ...updates });
 
     const paramNames = toTweak.map((p) => p.key).join(", ");
-    void set(ref(db, "ravespace/control/aiMode/lastAction"),
-      `Tweaked ${paramNames}`);
+    this.lastAction = `Tweaked ${paramNames}`;
   }
 
   // ─── Spike Params on Drop ───────────────────────────────────
@@ -476,7 +488,7 @@ export class AutoVJ {
     }
 
     if (Object.keys(updates).length > 0) {
-      void update(ref(db, `ravespace/control/sceneParams/${this.currentScene}`), updates);
+      this.renderer.setSceneParams({ ...updates });
     }
   }
 
@@ -496,7 +508,7 @@ export class AutoVJ {
     }
 
     if (Object.keys(updates).length > 0) {
-      void update(ref(db, `ravespace/control/sceneParams/${this.currentScene}`), updates);
+      this.renderer.setSceneParams({ ...updates });
     }
   }
 
@@ -507,13 +519,8 @@ export class AutoVJ {
     if (nowSec - this.lastPhraseTime < this.phraseInterval) return;
     if (this.calloutActive) return;
 
-    try {
-      const { get: fbGet } = await import("firebase/database");
-      const queueSnap = await fbGet(ref(db, "ravespace/callouts/queue"));
-      if (queueSnap.exists() && Object.keys(queueSnap.val()).length > 3) return;
-    } catch {
-      // Can't check queue — proceed anyway
-    }
+    // Check queue size (set externally via setCalloutQueueSize)
+    if (this.calloutQueueSize > 3) return;
 
     this.lastPhraseTime = nowSec;
 
@@ -524,23 +531,20 @@ export class AutoVJ {
         vjState: this.state,
       });
 
-      void set(ref(db, "ravespace/callouts/active"), {
-        name: phrase,
-        startTime: Date.now(),
-        duration: 4,
-        source: "ai" as const,
-        animationStyle: pickRandomAnimation(),
-      });
+      const animationStyle = pickRandomAnimation();
+      const duration = 4;
 
-      void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Phrase: "${phrase}"`);
+      // Notify caller via callback
+      this.onShowCallout?.(phrase, duration, animationStyle);
+
+      this.lastAction = `Phrase: "${phrase}"`;
     } catch {
       // Phrase generation failed — skip silently
     }
   }
 
   dispose(): void {
-    this.calloutUnsub?.();
+    // No-op: no external subscriptions to clean up
   }
 
   // ─── Multi-Layer Overlay Management ────────────────────────
@@ -590,23 +594,23 @@ export class AutoVJ {
       };
     }
 
-    // Push to Firebase
-    const overlayData = overlays.map((slot) =>
-      slot
-        ? { scene: slot.scene, blendMode: slot.blendMode, opacity: slot.opacity }
-        : { scene: "" },
-    );
-    void set(ref(db, "ravespace/control/overlays"), overlayData);
+    // Apply overlay layers directly to the Renderer
+    for (let i = 0; i < 3; i++) {
+      const slot = overlays[i];
+      if (slot) {
+        this.renderer.setOverlayLayer(i, slot.scene, this.sceneManager, slot.blendMode, slot.opacity);
+      } else {
+        this.renderer.clearOverlayLayer(i);
+      }
+    }
 
-    this.activeOverlays = overlays;
 
     const activeNames = overlays
       .filter((o) => o !== null)
       .map((o) => `${o!.scene}(${o!.blendMode}@${(o!.opacity * 100).toFixed(0)}%)`);
 
     if (activeNames.length > 0) {
-      void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Layers: ${activeNames.join(" + ")}`);
+      this.lastAction = `Layers: ${activeNames.join(" + ")}`;
     }
   }
 
@@ -619,7 +623,7 @@ export class AutoVJ {
     const isHighEnergy = this.currentEnergy === "high" || this.currentEnergy === "peak";
     const isMedium = this.currentEnergy === "medium";
 
-    void set(ref(db, "ravespace/control/effects"), {
+    this.renderer.setEffectsSettings({
       dropFlash: isMedium || isHighEnergy,
       dropZoom: isHighEnergy,
       screenShake: isHighEnergy,
