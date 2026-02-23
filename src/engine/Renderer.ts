@@ -129,6 +129,10 @@ export class Renderer {
     this.transitionEngine.setTransition(effect, duration);
   }
 
+  getTransitionSettings(): { effect: string; duration: number } {
+    return this.transitionEngine.getSettings();
+  }
+
   getEffectsLayer(): EffectsLayer {
     return this.effectsLayer;
   }

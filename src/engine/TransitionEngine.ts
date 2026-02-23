@@ -159,6 +159,10 @@ export class TransitionEngine {
     if (this.newScene) this.newScene.resize(width, height);
   }
 
+  getSettings(): { effect: string; duration: number } {
+    return { effect: this.currentTransitionName, duration: this.duration };
+  }
+
   dispose(): void {
     this.targetA.dispose();
     this.targetB.dispose();

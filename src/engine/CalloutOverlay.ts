@@ -1,20 +1,10 @@
-import { ref, onValue, remove, type Unsubscribe } from "firebase/database";
-import { db } from "../firebase/config";
-
-interface ActiveCallout {
-  name: string;
-  startTime: number;
-  duration: number;
-}
-
 /**
  * Animated text overlay that shows audience shoutouts on the display.
- * Listens to RTDB for active callout and renders animated text.
+ * Called directly from the PeerHost message handler.
  */
 export class CalloutOverlay {
   private el: HTMLDivElement;
   private nameEl: HTMLDivElement;
-  private unsubscribe: Unsubscribe | null = null;
   private animationTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
@@ -49,17 +39,7 @@ export class CalloutOverlay {
     document.body.appendChild(this.el);
   }
 
-  start(): void {
-    const activeRef = ref(db, "ravespace/callouts/active");
-    this.unsubscribe = onValue(activeRef, (snapshot) => {
-      const data = snapshot.val() as ActiveCallout | null;
-      if (data?.name) {
-        this.show(data.name, data.duration ?? 5);
-      }
-    });
-  }
-
-  private show(name: string, duration: number): void {
+  trigger(name: string, duration: number): void {
     // Clear any pending hide
     if (this.animationTimeout) {
       clearTimeout(this.animationTimeout);
@@ -77,16 +57,10 @@ export class CalloutOverlay {
     this.animationTimeout = setTimeout(() => {
       this.nameEl.style.opacity = "0";
       this.nameEl.style.transform = "scale(1.2)";
-
-      // Clear active callout after fade out
-      setTimeout(() => {
-        void remove(ref(db, "ravespace/callouts/active"));
-      }, 500);
     }, duration * 1000);
   }
 
   dispose(): void {
-    this.unsubscribe?.();
     if (this.animationTimeout) clearTimeout(this.animationTimeout);
     this.el.remove();
   }

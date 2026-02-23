@@ -1,6 +1,6 @@
-import { ref, set } from "firebase/database";
-import { db } from "../firebase/config";
 import type { AudioFeatures } from "../types/audio";
+import type { Renderer } from "../engine/Renderer";
+import type { SceneManager } from "../engine/SceneManager";
 import {
   classifyEnergy,
   MOOD_PROFILES,
@@ -14,6 +14,8 @@ import {
 type AutoVJState = "idle" | "building" | "dropping" | "chilling" | "shifting";
 
 export class AutoVJ {
+  private renderer: Renderer;
+  private sceneManager: SceneManager;
   private enabled = false;
   private state: AutoVJState = "idle";
   private currentEnergy: EnergyLevel = "low";
@@ -21,16 +23,22 @@ export class AutoVJ {
   private lastTransitionChange = 0;
   private currentScene = "plasma";
   private frameCount = 0;
+  private lastAction = "";
 
   // Smoothed energy for trend detection
   private energySmoothed = 0;
   private prevEnergyLevel: EnergyLevel = "low";
 
+  constructor(renderer: Renderer, sceneManager: SceneManager) {
+    this.renderer = renderer;
+    this.sceneManager = sceneManager;
+  }
+
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
     if (enabled) {
       this.state = "idle";
-      void set(ref(db, "ravespace/control/aiMode/lastAction"), "AI VJ activated");
+      this.lastAction = "AI VJ activated";
     }
   }
 
@@ -40,6 +48,10 @@ export class AutoVJ {
 
   getState(): AutoVJState {
     return this.state;
+  }
+
+  getLastAction(): string {
+    return this.lastAction;
   }
 
   /** Called every frame with current audio features */
@@ -109,12 +121,8 @@ export class AutoVJ {
       // Dramatic transition on big drops
       const profile = MOOD_PROFILES.peak;
       const transition = pickRandom(profile.transitions);
-      void set(ref(db, "ravespace/control/transition"), {
-        effect: transition,
-        duration: 0.5 + intensity,
-      });
-      void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Drop! ${transition} transition`);
+      this.renderer.setTransition(transition, 0.5 + intensity);
+      this.lastAction = `Drop! ${transition} transition`;
     }
   }
 
@@ -125,9 +133,8 @@ export class AutoVJ {
       this.state = "building";
       // Increase speed during build
       const speed = 1.0 + intensity * 1.5;
-      void set(ref(db, "ravespace/control/globalParams/speedMultiplier"), speed);
-      void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Building... speed ${speed.toFixed(1)}x`);
+      this.renderer.setGlobalParams({ speedMultiplier: speed });
+      this.lastAction = `Building... speed ${speed.toFixed(1)}x`;
     }
   }
 
@@ -139,7 +146,7 @@ export class AutoVJ {
     // Adjust global params for new energy level
     const intensity = randomInRange(...profile.intensityRange);
     const speed = randomInRange(...profile.speedRange);
-    void set(ref(db, "ravespace/control/globalParams"), {
+    this.renderer.setGlobalParams({
       masterIntensity: intensity,
       speedMultiplier: speed,
       blackout: false,
@@ -149,15 +156,14 @@ export class AutoVJ {
     // Change transition style
     if (nowSec - this.lastTransitionChange > MIN_TRANSITION_INTERVAL) {
       const transition = pickRandom(profile.transitions);
-      void set(ref(db, "ravespace/control/transition"), {
-        effect: transition,
-        duration: this.currentEnergy === "peak" ? 1.5 : 3,
-      });
+      this.renderer.setTransition(
+        transition,
+        this.currentEnergy === "peak" ? 1.5 : 3,
+      );
       this.lastTransitionChange = nowSec;
     }
 
-    void set(ref(db, "ravespace/control/aiMode/lastAction"),
-      `Energy: ${this.currentEnergy} → intensity ${intensity.toFixed(1)}, speed ${speed.toFixed(1)}`);
+    this.lastAction = `Energy: ${this.currentEnergy} → intensity ${intensity.toFixed(1)}, speed ${speed.toFixed(1)}`;
   }
 
   private considerSceneSwitch(nowSec: number): void {
@@ -169,9 +175,8 @@ export class AutoVJ {
     this.currentScene = newScene;
     this.lastSceneSwitch = nowSec;
 
-    void set(ref(db, "ravespace/control/activeScene"), newScene);
-    void set(ref(db, "ravespace/control/aiMode/lastAction"),
-      `Switched to ${newScene}`);
+    this.renderer.setSceneByName(newScene, this.sceneManager);
+    this.lastAction = `Switched to ${newScene}`;
   }
 
   private triggerDrop(nowSec: number): void {
@@ -181,11 +186,10 @@ export class AutoVJ {
       const newScene = pickRandom(candidates);
       this.currentScene = newScene;
       this.lastSceneSwitch = nowSec;
-      void set(ref(db, "ravespace/control/activeScene"), newScene);
+      this.renderer.setSceneByName(newScene, this.sceneManager);
     }
 
-    void set(ref(db, "ravespace/control/aiMode/lastAction"),
-      `DROP → ${this.currentScene}`);
+    this.lastAction = `DROP → ${this.currentScene}`;
   }
 
   private applyChillScene(nowSec: number): void {
@@ -194,13 +198,9 @@ export class AutoVJ {
     if (newScene !== this.currentScene) {
       this.currentScene = newScene;
       this.lastSceneSwitch = nowSec;
-      void set(ref(db, "ravespace/control/activeScene"), newScene);
-      void set(ref(db, "ravespace/control/transition"), {
-        effect: pickRandom(profile.transitions),
-        duration: 5,
-      });
-      void set(ref(db, "ravespace/control/aiMode/lastAction"),
-        `Chilling → ${newScene}`);
+      this.renderer.setSceneByName(newScene, this.sceneManager);
+      this.renderer.setTransition(pickRandom(profile.transitions), 5);
+      this.lastAction = `Chilling → ${newScene}`;
     }
   }
 }

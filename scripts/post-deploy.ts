@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { readdirSync, readFileSync, statSync } from "fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 
 function hashDirectory(dir: string): string {
@@ -21,27 +21,17 @@ function hashDirectory(dir: string): string {
   return hash.digest("hex").slice(0, 12);
 }
 
-async function main() {
+function main() {
   const distDir = join(import.meta.dirname, "..", "dist");
   const version = hashDirectory(distDir);
 
-  // Write version to RTDB via REST API (path is publicly writable)
-  const url =
-    "https://collabboard-8c0d0-default-rtdb.firebaseio.com/ravespace/version.json";
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(version),
-  });
+  // Write version.json into dist/ so it gets deployed with the build
+  writeFileSync(
+    join(distDir, "version.json"),
+    JSON.stringify({ version, timestamp: Date.now() }),
+  );
 
-  if (!res.ok) {
-    throw new Error(`Failed to write version: ${res.status} ${await res.text()}`);
-  }
-
-  console.log(`Version stamped: ${version} — connected displays will auto-reload`);
+  console.log(`Version stamped: ${version} → dist/version.json`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main();
